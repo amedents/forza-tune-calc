@@ -169,7 +169,7 @@
     cross: {springMult:0.75, ride:"max", camberF:-0.5, camberR:-0.3, toeF:0.0, toeR:0.0, caster:5.0, psiF:24, psiR:24, accel:40, decel:30, awdBal:55, brakeBal:45}
   };
 
-  function num(id){ var v=parseFloat($(id).value); return isFinite(v)?v:null; }
+  function num(id){ var v=parseFloat(String($(id).value).replace(",",".")); return isFinite(v)?v:null; }
   function clamp(x,lo,hi){ return Math.max(lo,Math.min(hi,x)); }
   function fmt(x,d){ return (Math.round(x*Math.pow(10,d))/Math.pow(10,d)).toFixed(d); }
 
@@ -392,7 +392,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="__APP_BUILD__";
+  var BUILD="20260606192045";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
