@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Forza Tune" />
+<meta name="theme-color" content="#0c0f16" />
+<link rel="apple-touch-icon" sizes="180x180" href="icon-180.png" />
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png" />
+<link rel="manifest" href="manifest.webmanifest" />
+<title>Forza Tune Calc — offline FH6 suspension tuner</title>
+<style>
+  :root{
+    --bg:#0c0f16; --panel:#151a26; --panel2:#1d2331; --line:#2a3245;
+    --txt:#eaecf3; --muted:#9aa3b8; --accent:#ff7a3c; --accent2:#5b8cff; --good:#3ecf8e; --warn:#ffb454;
+    --radius:16px; --shadow:0 8px 30px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:radial-gradient(1100px 520px at 85% -10%,#2a1b14,transparent),var(--bg);
+    color:var(--txt); min-height:100vh; padding:24px; line-height:1.45;
+  }
+  .wrap{max-width:920px;margin:0 auto}
+  header{margin-bottom:8px}
+  h1{font-size:22px;margin:0;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);margin:22px 0 10px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .results{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px}
+  @media(max-width:680px){.grid2,.grid3,.results{grid-template-columns:1fr}body{padding:14px}}
+  label{display:block;font-size:12px;color:var(--muted);margin:0 0 4px}
+  input,select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:9px 10px;font-size:14px;font-family:inherit}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  .field{margin-bottom:10px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  details{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+  summary{cursor:pointer;font-size:13px;color:var(--muted);user-select:none}
+  button{cursor:pointer;border:1px solid var(--line);background:var(--accent);color:#1a0c04;font-weight:700;border-radius:10px;padding:10px 14px;font-size:14px;transition:transform .05s,filter .15s}
+  button:hover{filter:brightness(1.08)} button:active{transform:translateY(1px)}
+  button.ghost{background:var(--panel2);color:var(--txt);font-weight:600}
+  button.sm{padding:6px 10px;font-size:12.5px}
+  .res{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:13px}
+  .res h3{margin:0 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent)}
+  .pair{display:flex;justify-content:space-between;font-size:14px;padding:3px 0;border-bottom:1px dashed rgba(255,255,255,.05)}
+  .pair:last-child{border-bottom:none}
+  .pair .k{color:var(--muted)} .pair .v{font-weight:700;font-variant-numeric:tabular-nums}
+  .note{font-size:12px;color:var(--muted);margin-top:7px;line-height:1.5}
+  .tips{font-size:13px;color:var(--txt);line-height:1.6}
+  .tips b{color:var(--accent2)}
+  .saved{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:8px}
+  .saved .nm{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .saved .meta{font-size:11.5px;color:var(--muted)}
+  .footer{color:var(--muted);font-size:12px;text-align:center;margin-top:20px;line-height:1.6}
+  .warnc{color:var(--warn)}
+  .err{color:var(--warn);font-size:12.5px;margin-top:4px;min-height:1px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Forza Tune Calc</h1>
+    <div class="sub">Offline FH6 suspension baseline — proportional spring/ARB/damping math from your car's own slider ranges. Nothing leaves this device.</div>
+  </header>
+
+  <h2>Car &amp; intent</h2>
+  <div class="card">
+    <div class="grid3">
+      <div class="field">
+        <label for="name">Tune name (car)</label>
+        <input id="name" type="text" placeholder="e.g. 2018 911 GT3 RS" maxlength="60" />
+      </div>
+      <div class="field">
+        <label for="frontDist">Front weight distribution %</label>
+        <input id="frontDist" type="number" min="1" max="99" step="0.1" value="52" />
+      </div>
+      <div class="field">
+        <label for="drivetrain">Drivetrain</label>
+        <select id="drivetrain">
+          <option value="RWD">RWD</option>
+          <option value="AWD">AWD</option>
+          <option value="FWD">FWD</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid3">
+      <div class="field">
+        <label for="intent">Intent / surface</label>
+        <select id="intent">
+          <option value="road">Road — grip</option>
+          <option value="drift">Drift</option>
+          <option value="dirt">Dirt / rally</option>
+          <option value="cross">Cross-country</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="springMin">Spring rate — Min <span style="color:var(--accent)">*</span></label>
+        <input id="springMin" type="number" min="0" step="0.1" placeholder="read off car" />
+      </div>
+      <div class="field">
+        <label for="springMax">Spring rate — Max <span style="color:var(--accent)">*</span></label>
+        <input id="springMax" type="number" min="0" step="0.1" placeholder="read off car" />
+      </div>
+    </div>
+    <div class="err" id="err"></div>
+
+    <details>
+      <summary>Advanced ranges (defaults match standard FH sliders — override per car if yours differ)</summary>
+      <div class="grid3" style="margin-top:10px">
+        <div class="field"><label for="arbMin">Anti-roll bar — Min</label><input id="arbMin" type="number" min="0" step="0.01" value="1" /></div>
+        <div class="field"><label for="arbMax">Anti-roll bar — Max</label><input id="arbMax" type="number" min="0" step="0.01" value="65" /></div>
+        <div class="field"><label>Damping range (bump &amp; rebound share it)</label>
+          <div class="row">
+            <input id="dampMin" type="number" min="0" step="0.1" value="1" aria-label="Damping min" />
+            <input id="dampMax" type="number" min="0" step="0.1" value="20" aria-label="Damping max" />
+          </div>
+        </div>
+        <div class="field"><label for="rideMin">Ride height — Min (optional)</label><input id="rideMin" type="number" min="0" step="0.1" placeholder="cm or in" /></div>
+        <div class="field"><label for="rideMax">Ride height — Max (optional)</label><input id="rideMax" type="number" min="0" step="0.1" placeholder="cm or in" /></div>
+      </div>
+    </details>
+    <div class="row" style="margin-top:12px">
+      <button id="saveBtn">★ Save tune</button>
+      <button class="ghost" id="resetBtn">Reset fields</button>
+    </div>
+  </div>
+
+  <h2>Suspension baseline</h2>
+  <div class="results" id="results"></div>
+
+  <h2>Gearing &amp; final notes</h2>
+  <div class="card">
+    <div class="tips" id="tips"></div>
+  </div>
+
+  <h2>Saved tunes (this device)</h2>
+  <div class="card">
+    <div id="savedList"></div>
+    <div class="row" style="margin-top:6px">
+      <button class="ghost sm" id="exportBtn">⬇ Export all</button>
+      <button class="ghost sm" id="importBtn">⬆ Import</button>
+      <input type="file" id="importFile" accept="application/json,.json" style="display:none" />
+    </div>
+    <div class="note">Tunes are stored only in this browser (<code>localStorage</code>). Export to move them to another device. <span class="warnc">Baselines are starting points</span> — drive a few laps and trim to taste.</div>
+  </div>
+
+  <div class="footer">
+    Math: springs / ARB / rebound = ((Max − Min) × axle weight %) + Min · bump = 65% of rebound · the standard Forza community method. No accounts, no servers, no tracking.
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var KEY="forzatune_v1";
+  var $=function(id){return document.getElementById(id);};
+
+  // ---- intent presets (community baselines; starting points) ----
+  var PRESETS={
+    road:  {springMult:1.00, ride:"min", camberF:-1.2, camberR:-0.8, toeF:0.0, toeR:0.0, caster:5.5, psiF:28, psiR:28, accel:50, decel:20, awdBal:75, brakeBal:50},
+    drift: {springMult:1.05, ride:"min", camberF:-2.5, camberR:-1.0, toeF:-1.0, toeR:0.0, caster:6.5, psiF:30, psiR:32, accel:100, decel:50, awdBal:90, brakeBal:55},
+    dirt:  {springMult:0.85, ride:"mid", camberF:-0.8, camberR:-0.5, toeF:0.0, toeR:0.0, caster:5.0, psiF:26, psiR:26, accel:40, decel:30, awdBal:60, brakeBal:48},
+    cross: {springMult:0.75, ride:"max", camberF:-0.5, camberR:-0.3, toeF:0.0, toeR:0.0, caster:5.0, psiF:24, psiR:24, accel:40, decel:30, awdBal:55, brakeBal:45}
+  };
+
+  function num(id){ var v=parseFloat($(id).value); return isFinite(v)?v:null; }
+  function clamp(x,lo,hi){ return Math.max(lo,Math.min(hi,x)); }
+  function fmt(x,d){ return (Math.round(x*Math.pow(10,d))/Math.pow(10,d)).toFixed(d); }
+
+  function readInputs(){
+    return {
+      name:$("name").value.trim(),
+      frontDist:num("frontDist"),
+      drivetrain:$("drivetrain").value,
+      intent:$("intent").value,
+      springMin:num("springMin"), springMax:num("springMax"),
+      arbMin:num("arbMin"), arbMax:num("arbMax"),
+      dampMin:num("dampMin"), dampMax:num("dampMax"),
+      rideMin:num("rideMin"), rideMax:num("rideMax")
+    };
+  }
+
+  // build a results card from a list of [key,value] pairs; optional note
+  function card(title,pairs,note){
+    var c=document.createElement("div"); c.className="res";
+    var h=document.createElement("h3"); h.textContent=title; c.appendChild(h);
+    pairs.forEach(function(p){
+      var row=document.createElement("div"); row.className="pair";
+      var k=document.createElement("span"); k.className="k"; k.textContent=p[0];
+      var v=document.createElement("span"); v.className="v"; v.textContent=p[1];
+      row.appendChild(k); row.appendChild(v); c.appendChild(row);
+    });
+    if(note){ var n=document.createElement("div"); n.className="note"; n.textContent=note; c.appendChild(n); }
+    return c;
+  }
+
+  function compute(){
+    var i=readInputs();
+    var err=$("err"); err.textContent="";
+    var box=$("results"); box.innerHTML="";
+
+    if(i.frontDist===null || i.frontDist<1 || i.frontDist>99){ err.textContent="Enter a front weight distribution between 1 and 99%."; return; }
+    var fd=i.frontDist/100, rd=1-fd;
+    var P=PRESETS[i.intent]||PRESETS.road;
+
+    // ---- Springs (requires per-car range) ----
+    if(i.springMin!==null && i.springMax!==null && i.springMax>i.springMin){
+      var sF=((i.springMax-i.springMin)*fd+i.springMin)*P.springMult;
+      var sR=((i.springMax-i.springMin)*rd+i.springMin)*P.springMult;
+      sF=clamp(sF,i.springMin,i.springMax); sR=clamp(sR,i.springMin,i.springMax);
+      box.appendChild(card("Springs",[["Front",fmt(sF,1)],["Rear",fmt(sR,1)]],
+        i.intent==="dirt"||i.intent==="cross"?"Softened for surface ("+Math.round(P.springMult*100)+"%) to keep the tyres planted over bumps.":null));
+    } else {
+      box.appendChild(card("Springs",[["Front","—"],["Rear","—"]],"Enter the car's Spring-rate Min & Max (read them off the suspension tuning page) to get values."));
+    }
+
+    // ---- ARB ----
+    if(i.arbMin!==null && i.arbMax!==null && i.arbMax>i.arbMin){
+      var aF=(i.arbMax-i.arbMin)*fd+i.arbMin;
+      var aR=(i.arbMax-i.arbMin)*rd+i.arbMin;
+      box.appendChild(card("Anti-roll bars",[["Front",fmt(aF,2)],["Rear",fmt(aR,2)]],"Stiffen one end to cut grip there: more front = less understeer."));
+    }
+
+    // ---- Damping ----
+    if(i.dampMin!==null && i.dampMax!==null && i.dampMax>i.dampMin){
+      var rebF=(i.dampMax-i.dampMin)*fd+i.dampMin;
+      var rebR=(i.dampMax-i.dampMin)*rd+i.dampMin;
+      var bumpF=clamp(rebF*0.65,i.dampMin,i.dampMax);
+      var bumpR=clamp(rebR*0.65,i.dampMin,i.dampMax);
+      box.appendChild(card("Damping",[
+        ["Rebound F",fmt(rebF,1)],["Rebound R",fmt(rebR,1)],
+        ["Bump F",fmt(bumpF,1)],["Bump R",fmt(bumpR,1)]
+      ],"Bump set to 65% of rebound. Raise bump for sharper response, lower it if the car skips over bumps."));
+    }
+
+    // ---- Ride height ----
+    var rhPairs, rhNote=null;
+    if(i.rideMin!==null && i.rideMax!==null && i.rideMax>i.rideMin){
+      var rh = P.ride==="min"? [i.rideMin,i.rideMin] : P.ride==="max"? [i.rideMax,i.rideMax] : [ (i.rideMin+i.rideMax)/2, (i.rideMin+i.rideMax)/2 ];
+      rhPairs=[["Front",fmt(rh[0],1)],["Rear",fmt(rh[1],1)]];
+    } else {
+      rhPairs=[["Front",P.ride==="min"?"lowest":P.ride==="max"?"highest":"mid"],["Rear",P.ride==="min"?"lowest":P.ride==="max"?"highest":"mid"]];
+      rhNote="Add the car's ride-height Min/Max in Advanced for exact numbers.";
+    }
+    if(P.ride==="min") rhNote=(rhNote?rhNote+" ":"")+"Lowest both ends = lowest centre of gravity for tarmac grip.";
+    if(P.ride==="max") rhNote=(rhNote?rhNote+" ":"")+"Raised for ground clearance off-road.";
+    box.appendChild(card("Ride height",rhPairs,rhNote));
+
+    // ---- Alignment ----
+    box.appendChild(card("Alignment",[
+      ["Camber F",fmt(P.camberF,1)+"°"],["Camber R",fmt(P.camberR,1)+"°"],
+      ["Toe F",fmt(P.toeF,1)+"°"],["Toe R",fmt(P.toeR,1)+"°"],
+      ["Caster",fmt(P.caster,1)+"°"]
+    ],"Negative camber adds cornering grip but costs straight-line traction — trim toward 0 if tyres overheat on the inside edge."));
+
+    // ---- Differential ----
+    var diffPairs;
+    if(i.drivetrain==="AWD"){
+      diffPairs=[["Front accel",Math.round(P.accel*0.6)+"%"],["Front decel",Math.round(P.decel*0.6)+"%"],
+                 ["Rear accel",P.accel+"%"],["Rear decel",P.decel+"%"],["Balance (rear)",P.awdBal+"%"]];
+    } else if(i.drivetrain==="FWD"){
+      diffPairs=[["Accel",P.accel+"%"],["Decel","0%"]];
+    } else {
+      diffPairs=[["Accel",P.accel+"%"],["Decel",P.decel+"%"]];
+    }
+    box.appendChild(card("Differential",diffPairs,"Higher accel locks the driven axle under power (more stability, more push); lower frees rotation."));
+
+    // ---- Brakes ----
+    box.appendChild(card("Brakes",[["Balance",P.brakeBal+"% front"],["Pressure","100%"]],"Shift balance rearward a few % if the front locks and washes wide into corners."));
+
+    // ---- Tyre pressure ----
+    box.appendChild(card("Tyre pressure",[["Front",fmt(P.psiF,1)+" psi"],["Rear",fmt(P.psiR,1)+" psi"]],"Cold start values. Forza target is ~32–33 psi HOT — after a lap, drop pressure if a tyre is above that."));
+
+    renderTips(i);
+  }
+
+  function renderTips(i){
+    var t=$("tips"); t.innerHTML="";
+    var lines=[
+      ["Final drive: ", "lower the ratio number for more top speed, raise it for acceleration. Set it on a known straight — you want to just hit redline in top gear at the end of the longest straight you race."],
+      ["Individual gears: ", "space them so revs drop back into the meat of the power band on each upshift; tighten the lower gears for punchy corner exits."],
+      ["Drivetrain ("+i.drivetrain+"): ", i.drivetrain==="RWD"?"watch power-on oversteer — soften the rear ARB or lower diff accel if it steps out." : i.drivetrain==="FWD"?"fight understeer with stiffer rear ARB and a touch more rear-soft balance." : "AWD is forgiving; shift diff balance rearward for a more playful car, forward for stability."],
+      ["Workflow: ", "change ONE thing at a time and re-run the same corner — baselines get you 90% there, feel does the last 10%."]
+    ];
+    lines.forEach(function(l){
+      var p=document.createElement("div"); p.style.marginBottom="6px";
+      var b=document.createElement("b"); b.textContent=l[0]; p.appendChild(b);
+      p.appendChild(document.createTextNode(l[1]));
+      t.appendChild(p);
+    });
+  }
+
+  // ---- storage ----
+  function load(){ try{ var v=localStorage.getItem(KEY); return v?JSON.parse(v):[]; }catch(e){ return []; } }
+  function save(arr){ try{ localStorage.setItem(KEY,JSON.stringify(arr)); }catch(e){ alert("Couldn't save — storage may be full or blocked."); } }
+
+  function snapshot(){
+    var i=readInputs();
+    return {name:i.name||"Untitled tune", frontDist:i.frontDist, drivetrain:i.drivetrain, intent:i.intent,
+      springMin:i.springMin, springMax:i.springMax, arbMin:i.arbMin, arbMax:i.arbMax,
+      dampMin:i.dampMin, dampMax:i.dampMax, rideMin:i.rideMin, rideMax:i.rideMax, savedAt:new Date().toISOString()};
+  }
+  function applyTune(t){
+    $("name").value=t.name||""; $("frontDist").value=t.frontDist!=null?t.frontDist:"";
+    $("drivetrain").value=t.drivetrain||"RWD"; $("intent").value=t.intent||"road";
+    $("springMin").value=t.springMin!=null?t.springMin:""; $("springMax").value=t.springMax!=null?t.springMax:"";
+    $("arbMin").value=t.arbMin!=null?t.arbMin:1; $("arbMax").value=t.arbMax!=null?t.arbMax:65;
+    $("dampMin").value=t.dampMin!=null?t.dampMin:1; $("dampMax").value=t.dampMax!=null?t.dampMax:20;
+    $("rideMin").value=t.rideMin!=null?t.rideMin:""; $("rideMax").value=t.rideMax!=null?t.rideMax:"";
+    compute();
+  }
+
+  function renderSaved(){
+    var list=$("savedList"); list.innerHTML="";
+    var arr=load();
+    if(!arr.length){ var e=document.createElement("div"); e.className="note"; e.textContent="No saved tunes yet — set a car up and hit ★ Save tune."; list.appendChild(e); return; }
+    arr.forEach(function(t,idx){
+      var row=document.createElement("div"); row.className="saved";
+      var info=document.createElement("div"); info.style.minWidth="0";
+      var nm=document.createElement("div"); nm.className="nm"; nm.textContent=t.name; info.appendChild(nm);
+      var meta=document.createElement("div"); meta.className="meta";
+      meta.textContent=(t.drivetrain||"?")+" · "+(t.intent||"?")+" · "+(t.frontDist!=null?t.frontDist+"% front":"");
+      info.appendChild(meta); row.appendChild(info);
+      var btns=document.createElement("div"); btns.className="row";
+      var ld=document.createElement("button"); ld.className="ghost sm"; ld.textContent="Load"; ld.onclick=function(){ applyTune(t); window.scrollTo({top:0,behavior:"smooth"}); };
+      var del=document.createElement("button"); del.className="ghost sm"; del.textContent="✕"; del.title="Delete";
+      del.onclick=function(){ if(confirm('Delete tune "'+t.name+'"?')){ var a=load(); a.splice(idx,1); save(a); renderSaved(); } };
+      btns.appendChild(ld); btns.appendChild(del); row.appendChild(btns);
+      list.appendChild(row);
+    });
+  }
+
+  function doSave(){
+    var snap=snapshot();
+    if(snap.frontDist===null){ alert("Set a front weight distribution before saving."); return; }
+    var arr=load();
+    var ix=arr.findIndex(function(x){ return x.name.toLowerCase()===snap.name.toLowerCase(); });
+    if(ix>=0){ if(!confirm('A tune named "'+snap.name+'" exists. Overwrite it?')) return; arr[ix]=snap; }
+    else arr.unshift(snap);
+    save(arr); renderSaved();
+  }
+
+  function download(fn,txt){ var a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([txt],{type:"application/json"})); a.download=fn; document.body.appendChild(a); a.click(); setTimeout(function(){URL.revokeObjectURL(a.href); a.remove();},0); }
+  function exportAll(){
+    var arr=load(); if(!arr.length){ alert("No saved tunes to export yet."); return; }
+    var d=new Date(); var day=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+    download("forza-tunes-"+day+".json", JSON.stringify({app:"forza-tune-calc",version:1,exportedAt:d.toISOString(),tunes:arr},null,2));
+  }
+  function importAll(file){
+    var r=new FileReader();
+    r.onload=function(){ try{
+      var p=JSON.parse(r.result);
+      if(!p||p.app!=="forza-tune-calc"||!Array.isArray(p.tunes)) throw new Error("bad file");
+      var cur=load(); var byName={}; cur.forEach(function(t){ byName[t.name.toLowerCase()]=true; });
+      var added=0;
+      p.tunes.forEach(function(t){ if(t&&typeof t.name==="string"){ if(byName[t.name.toLowerCase()]){ t.name=t.name+" (imported)"; } cur.unshift(t); added++; } });
+      save(cur); renderSaved();
+      alert("Imported "+added+" tune"+(added===1?"":"s")+".");
+    }catch(e){ alert("Couldn't read that file — is it a Forza Tune export made here?"); } };
+    r.readAsText(file);
+  }
+
+  function resetFields(){
+    ["name","frontDist","springMin","springMax","rideMin","rideMax"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
+    $("drivetrain").value="RWD"; $("intent").value="road";
+    $("arbMin").value=1; $("arbMax").value=65; $("dampMin").value=1; $("dampMax").value=20;
+    compute();
+  }
+
+  // ---- wire up ----
+  ["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax"]
+    .forEach(function(id){ $(id).addEventListener("input",compute); });
+  $("saveBtn").onclick=doSave;
+  $("resetBtn").onclick=resetFields;
+  $("exportBtn").onclick=exportAll;
+  $("importBtn").onclick=function(){ $("importFile").click(); };
+  $("importFile").addEventListener("change",function(e){ if(e.target.files[0]) importAll(e.target.files[0]); e.target.value=""; });
+
+  compute();
+  renderSaved();
+})();
+</script>
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}</script>
+</body>
+</html>
