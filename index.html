@@ -250,7 +250,7 @@
   // log-skewed so low-gear gaps are wider (tame wheelspin) and top gaps tighter (hold revs vs drag),
   // while preserving both endpoints exactly. Final drive scales the whole set for top speed.
   // speed at redline per gear (km/h) = redline * pi * tyreDiaMetres * 0.06 / (gearRatio * finalDrive).
-  function gearLadder(i,P,p2w){
+  function gearLadder(i,P,p2w,t2w){
     var N = i.gears!==null ? Math.round(i.gears) : null;
     if(N===null || N<2 || N>10)
       return {pairs:[["Gears","—"]], note:"Enter the car's number of gears (2–10) and its 1st-gear ratio in the Engine & gearing section to build the full ladder."};
@@ -259,9 +259,11 @@
     var haveTop=(i.gearTop!==null && i.gearTop>0 && i.gearTop<i.gear1);
     var gTop=haveTop? i.gearTop : i.gear1*Math.pow(0.80, N-1);  // light fallback: typical 0.80 step
     var kbar=Math.pow(gTop/i.gear1, 1/(N-1));
-    var prog=clamp(0.10 + (p2w!==null?(p2w-0.10)*0.6:0), 0.05, 0.22);
+    // low-gear gap width tracks wheelspin tendency — torque-to-weight is the better predictor, fall back to power-to-weight
+    var prog = t2w!==null ? clamp(0.10 + (t2w-0.25)*0.30, 0.05, 0.22)
+                          : clamp(0.10 + (p2w!==null?(p2w-0.10)*0.6:0), 0.05, 0.22);
     var specOut=(i.power!==null && i.displacement!==null && i.displacement>0)? i.power/i.displacement : null;
-    if(specOut!==null) prog=clamp(prog-(specOut-90)*0.0007, 0.05, 0.22); // peaky engines → tighter, more even
+    if(specOut!==null) prog=clamp(prog-(specOut-90)*0.0007, 0.05, 0.22); // peaky engines (high kW/L) → tighter, more even
     var ratios=[i.gear1], steps=[];
     for(var s=1;s<=N-1;s++){
       var c=(N-2)>0? ((s-1)/(N-2)-0.5) : 0;       // -0.5 (low gap) .. +0.5 (high gap); symmetric -> endpoints preserved
@@ -275,7 +277,9 @@
       fd=redline*Math.PI*diaM*0.06/(gTop*i.topSpeed); fdSrc="≈"+Math.round(i.topSpeed)+" km/h in top";
     }
     if(fd===null && i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
-      fd=i.finalMin+P.finalBias*(i.finalMax-i.finalMin); fdSrc="intent baseline";
+      var bias=P.finalBias;
+      if(p2w!==null) bias=clamp(bias-(p2w-0.12)*0.8, 0, 1); // powerful cars: longer gears for traction (lower bias); weak: shorter for punch
+      fd=i.finalMin+bias*(i.finalMax-i.finalMin); fdSrc=(p2w!==null?"intent + power-to-weight":"intent baseline");
     }
     if(fd!==null && i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
       var cl=clamp(fd,i.finalMin,i.finalMax); if(cl!==fd) fdClamped=true; fd=cl;
@@ -296,7 +300,10 @@
       if(i.peakTorqueRPM!==null) lt+=" — keep that near your "+Math.round(i.peakTorqueRPM)+" rpm torque peak (wider gears drop further)";
       bits.push(lt+".");
     } else bits.push("Add redline (+ peak-torque RPM) to see where each upshift lands the engine.");
-    if(p2w!==null) bits.push("Power-to-weight "+fmt(p2w*1000,0)+" kW/t → "+(prog>0.13?"wider":"moderate")+" low-gear gaps to tame wheelspin.");
+    if(p2w!==null||t2w!==null){
+      var pm=(p2w!==null?fmt(p2w*1000,0)+" kW/t":"")+((p2w!==null&&t2w!==null)?", ":"")+(t2w!==null?fmt(t2w*1000,0)+" Nm/t":"");
+      bits.push(pm+" → "+(prog>0.13?"wider":"moderate")+" low-gear gaps to tame wheelspin"+(p2w!==null?"; powerful cars also lean to longer overall gearing for traction":"")+".");
+    }
     if(fdClamped) bits.push("Final drive hit this car's slider limit, so real top speed will differ from the target — nudge the top-gear ratio to compensate.");
     if(diaM===null) bits.push("Add tyre diameter (cm) + top speed for the final drive and km/h-at-redline readout.");
     bits.push("Set final drive first on the longest straight, then fine-trim gears by feel.");
@@ -378,8 +385,9 @@
     // ---- Brakes ----
     box.appendChild(card("Brakes",[["Balance",P.brakeBal+"% front"],["Pressure","100%"]],"Shift balance rearward a few % if the front locks and washes wide into corners."));
 
-    // ---- power-to-weight (kW/kg): refines aero bias + gear spacing ----
+    // ---- power-to-weight (kW/kg) + torque-to-weight (Nm/kg): drive aero bias, gear spacing & final-drive length ----
     var p2w=(i.power!==null && i.weight!==null && i.power>0 && i.weight>0)? i.power/i.weight : null;
+    var t2w=(i.torque!==null && i.weight!==null && i.torque>0 && i.weight>0)? i.torque/i.weight : null;
 
     // ---- Aero (downforce, kgf) ----
     var aF=P.aeroF, aR=P.aeroR, aeroNudged=false;
@@ -403,7 +411,7 @@
     box.appendChild(card("Aero (downforce)",aeroPairs,aeroNote));
 
     // ---- Gearing (per-gear ratios) ----
-    var gl=gearLadder(i,P,p2w);
+    var gl=gearLadder(i,P,p2w,t2w);
     box.appendChild(card("Gearing",gl.pairs,gl.note));
 
     // ---- Tyre pressure ----
@@ -420,6 +428,13 @@
       ["Drivetrain ("+i.drivetrain+"): ", i.drivetrain==="RWD"?"watch power-on oversteer — soften the rear ARB or lower diff accel if it steps out." : i.drivetrain==="FWD"?"fight understeer with stiffer rear ARB and a touch more rear-soft balance." : "AWD is forgiving; shift diff balance rearward for a more playful car, forward for stability."],
       ["Workflow: ", "change ONE thing at a time and re-run the same corner — baselines get you 90% there, feel does the last 10%."]
     ];
+    if(i.power!=null && i.weight!=null && i.power>0 && i.weight>0){
+      var kwt=i.power/i.weight*1000;
+      lines.unshift(["Power-to-weight ("+Math.round(kwt)+" kW/t): ",
+        kwt>=160?"very high — run slightly longer gears and wider rear tyres to keep traction off the line; don't over-shorten the final drive."
+        :kwt>=90?"moderate — the gear ladder above already widens the low gears to suit it."
+        :"modest — you can run a shorter final drive for more punch out of corners."]);
+    }
     lines.forEach(function(l){
       var p=document.createElement("div"); p.style.marginBottom="6px";
       var b=document.createElement("b"); b.textContent=l[0]; p.appendChild(b);
@@ -562,7 +577,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="20260607-204009";
+  var BUILD="20260608-002256";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
