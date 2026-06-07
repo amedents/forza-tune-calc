@@ -137,6 +137,30 @@
         </div>
       </div>
     </details>
+
+    <details>
+      <summary>Engine &amp; gearing (optional — for exact per-gear ratios)</summary>
+      <div class="grid3" style="margin-top:10px">
+        <div class="field"><label for="power">Power (kW)</label><input id="power" type="number" min="0" step="1" placeholder="e.g. 300" /></div>
+        <div class="field"><label for="torque">Torque (Nm)</label><input id="torque" type="number" min="0" step="1" placeholder="e.g. 450" /></div>
+        <div class="field"><label for="weight">Weight (kg)</label><input id="weight" type="number" min="0" step="1" placeholder="e.g. 1400" /></div>
+      </div>
+      <div class="grid3">
+        <div class="field"><label for="displacement">Displacement (L)</label><input id="displacement" type="number" min="0" step="0.1" placeholder="e.g. 3.0" /></div>
+        <div class="field"><label for="gears">Number of gears</label><input id="gears" type="number" min="2" max="10" step="1" placeholder="e.g. 6" /></div>
+        <div class="field"><label for="gear1">1st gear ratio</label><input id="gear1" type="number" min="0" step="0.01" placeholder="read off car" /></div>
+      </div>
+      <div class="grid3">
+        <div class="field"><label for="gearTop">Top gear ratio</label><input id="gearTop" type="number" min="0" step="0.01" placeholder="read off car" /></div>
+        <div class="field"><label for="redline">Redline RPM (shift point)</label><input id="redline" type="number" min="0" step="100" placeholder="e.g. 7000" /></div>
+        <div class="field"><label for="peakTorqueRPM">Peak-torque RPM</label><input id="peakTorqueRPM" type="number" min="0" step="100" placeholder="e.g. 4500" /></div>
+      </div>
+      <div class="grid3">
+        <div class="field"><label for="tyreDia">Tyre diameter (cm)</label><input id="tyreDia" type="number" min="0" step="0.5" placeholder="e.g. 65" /></div>
+        <div class="field"><label for="topSpeed">Target top speed (km/h)</label><input id="topSpeed" type="number" min="0" step="5" placeholder="e.g. 300" /></div>
+      </div>
+      <div class="note">All optional. Fill <b>gears + 1st &amp; top gear ratios</b> for the exact ladder; add <b>redline + peak-torque RPM</b> to check where each upshift lands the engine, and <b>tyre diameter + top speed</b> for the final drive and a km/h-at-redline readout. Read these off Forza's tuning &amp; tyre-upgrade screens (peak-torque RPM is on the dyno/telemetry graph).</div>
+    </details>
     <div class="row" style="margin-top:12px">
       <button id="saveBtn">★ Save tune</button>
       <button class="ghost" id="resetBtn">Reset fields</button>
@@ -199,7 +223,10 @@
       rideMin:num("rideMin"), rideMax:num("rideMax"),
       frontAeroMin:num("frontAeroMin"), frontAeroMax:num("frontAeroMax"),
       rearAeroMin:num("rearAeroMin"), rearAeroMax:num("rearAeroMax"),
-      finalMin:num("finalMin"), finalMax:num("finalMax")
+      finalMin:num("finalMin"), finalMax:num("finalMax"),
+      power:num("power"), torque:num("torque"), weight:num("weight"), displacement:num("displacement"),
+      gears:num("gears"), redline:num("redline"), peakTorqueRPM:num("peakTorqueRPM"),
+      gear1:num("gear1"), gearTop:num("gearTop"), tyreDia:num("tyreDia"), topSpeed:num("topSpeed")
     };
   }
 
@@ -215,6 +242,65 @@
     });
     if(note){ var n=document.createElement("div"); n.className="note"; n.textContent=note; c.appendChild(n); }
     return c;
+  }
+
+  // ---- full gear ladder; degrades gracefully when fields are blank ----
+  // Anchors: 1st gear (launch) and top gear (top speed) are read off the car. The middle gears are a
+  // geometric-progressive interpolation between them — a constant base step kbar=(top/1st)^(1/(N-1)),
+  // log-skewed so low-gear gaps are wider (tame wheelspin) and top gaps tighter (hold revs vs drag),
+  // while preserving both endpoints exactly. Final drive scales the whole set for top speed.
+  // speed at redline per gear (km/h) = redline * pi * tyreDiaMetres * 0.06 / (gearRatio * finalDrive).
+  function gearLadder(i,P,p2w){
+    var N = i.gears!==null ? Math.round(i.gears) : null;
+    if(N===null || N<2 || N>10)
+      return {pairs:[["Gears","—"]], note:"Enter the car's number of gears (2–10) and its 1st-gear ratio in the Engine & gearing section to build the full ladder."};
+    if(i.gear1===null || i.gear1<=0)
+      return {pairs:[["1st gear","—"]], note:"Enter the car's 1st-gear ratio (read it off the gearing sliders) to compute every gear."};
+    var haveTop=(i.gearTop!==null && i.gearTop>0 && i.gearTop<i.gear1);
+    var gTop=haveTop? i.gearTop : i.gear1*Math.pow(0.80, N-1);  // light fallback: typical 0.80 step
+    var kbar=Math.pow(gTop/i.gear1, 1/(N-1));
+    var prog=clamp(0.10 + (p2w!==null?(p2w-0.10)*0.6:0), 0.05, 0.22);
+    var specOut=(i.power!==null && i.displacement!==null && i.displacement>0)? i.power/i.displacement : null;
+    if(specOut!==null) prog=clamp(prog-(specOut-90)*0.0007, 0.05, 0.22); // peaky engines → tighter, more even
+    var ratios=[i.gear1], steps=[];
+    for(var s=1;s<=N-1;s++){
+      var c=(N-2)>0? ((s-1)/(N-2)-0.5) : 0;       // -0.5 (low gap) .. +0.5 (high gap); symmetric -> endpoints preserved
+      var step=kbar*Math.exp(prog*(c*2));         // low gap: smaller step (bigger drop); high gap: larger step
+      steps.push(step); ratios.push(ratios[s-1]*step);
+    }
+    ratios[N-1]=gTop;                              // pin exact top gear (guard float drift)
+    var redline=i.redline, diaM=(i.tyreDia!==null && i.tyreDia>0)? i.tyreDia/100 : null;
+    var fd=null, fdSrc="", fdClamped=false;
+    if(diaM!==null && i.topSpeed!==null && i.topSpeed>0 && redline!==null){
+      fd=redline*Math.PI*diaM*0.06/(gTop*i.topSpeed); fdSrc="≈"+Math.round(i.topSpeed)+" km/h in top";
+    }
+    if(fd===null && i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
+      fd=i.finalMin+P.finalBias*(i.finalMax-i.finalMin); fdSrc="intent baseline";
+    }
+    if(fd!==null && i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
+      var cl=clamp(fd,i.finalMin,i.finalMax); if(cl!==fd) fdClamped=true; fd=cl;
+    }
+    var pairs=[];
+    if(fd!==null) pairs.push(["Final drive",fmt(fd,2)+(fdSrc?" ("+fdSrc+")":"")]);
+    for(var g=0;g<N;g++){
+      var v=fmt(ratios[g],2);
+      if(diaM!==null && fd!==null && redline!==null){ v+="  ·  "+Math.round(redline*Math.PI*diaM*0.06/(ratios[g]*fd))+" km/h"; }
+      pairs.push(["Gear "+(g+1),v]);
+    }
+    var bits=[];
+    bits.push(haveTop? "Geometric-progressive spread from your 1st ("+fmt(i.gear1,2)+") to top ("+fmt(gTop,2)+") gear."
+                     : "No top-gear entered — assumed a typical spread (top ≈ "+fmt(gTop,2)+"). Add the car's top-gear ratio for the exact spread.");
+    if(redline!==null){
+      var loL=Math.round(redline*Math.min.apply(null,steps)), hiL=Math.round(redline*Math.max.apply(null,steps));
+      var lt="At "+Math.round(redline)+" rpm, upshifts land the engine ~"+loL+"–"+hiL+" rpm";
+      if(i.peakTorqueRPM!==null) lt+=" — keep that near your "+Math.round(i.peakTorqueRPM)+" rpm torque peak (wider gears drop further)";
+      bits.push(lt+".");
+    } else bits.push("Add redline (+ peak-torque RPM) to see where each upshift lands the engine.");
+    if(p2w!==null) bits.push("Power-to-weight "+fmt(p2w*1000,0)+" kW/t → "+(prog>0.13?"wider":"moderate")+" low-gear gaps to tame wheelspin.");
+    if(fdClamped) bits.push("Final drive hit this car's slider limit, so real top speed will differ from the target — nudge the top-gear ratio to compensate.");
+    if(diaM===null) bits.push("Add tyre diameter (cm) + top speed for the final drive and km/h-at-redline readout.");
+    bits.push("Set final drive first on the longest straight, then fine-trim gears by feel.");
+    return {pairs:pairs, note:bits.join(" ")};
   }
 
   function compute(){
@@ -292,33 +378,33 @@
     // ---- Brakes ----
     box.appendChild(card("Brakes",[["Balance",P.brakeBal+"% front"],["Pressure","100%"]],"Shift balance rearward a few % if the front locks and washes wide into corners."));
 
+    // ---- power-to-weight (kW/kg): refines aero bias + gear spacing ----
+    var p2w=(i.power!==null && i.weight!==null && i.power>0 && i.weight>0)? i.power/i.weight : null;
+
     // ---- Aero (downforce, kgf) ----
+    var aF=P.aeroF, aR=P.aeroR, aeroNudged=false;
+    if(p2w!==null && (i.intent==="road"||i.intent==="drift")){
+      var am=clamp((p2w-0.12)*0.5,-0.10,0.12);
+      if(Math.abs(am)>=0.01){ aF=clamp(aF+am,0,1); aR=clamp(aR+am,0,1); aeroNudged=true; }
+    }
     var aeroPairs, aeroNote;
     var haveAF=i.frontAeroMin!==null && i.frontAeroMax!==null && i.frontAeroMax>i.frontAeroMin;
     var haveAR=i.rearAeroMin!==null && i.rearAeroMax!==null && i.rearAeroMax>i.rearAeroMin;
     if(haveAF||haveAR){
       aeroPairs=[
-        ["Front", haveAF? fmt(i.frontAeroMin+P.aeroF*(i.frontAeroMax-i.frontAeroMin),0)+" kgf" : "—"],
-        ["Rear",  haveAR? fmt(i.rearAeroMin+P.aeroR*(i.rearAeroMax-i.rearAeroMin),0)+" kgf" : "—"]
+        ["Front", haveAF? fmt(i.frontAeroMin+aF*(i.frontAeroMax-i.frontAeroMin),0)+" kgf" : "—"],
+        ["Rear",  haveAR? fmt(i.rearAeroMin+aR*(i.rearAeroMax-i.rearAeroMin),0)+" kgf" : "—"]
       ];
-      aeroNote="More downforce = more grip but more drag (lower top speed). "+(i.intent==="road"?"Near-max here, rear-biased for high-speed stability.":"Trimmed for "+i.intent+": less drag, more compliance.");
+      aeroNote="More downforce = more grip but more drag (lower top speed). "+(i.intent==="road"?"Near-max here, rear-biased for high-speed stability.":"Trimmed for "+i.intent+": less drag, more compliance.")+(aeroNudged?" Nudged up for this car's power-to-weight.":"");
     } else {
-      aeroPairs=[["Front",aeroLevel(P.aeroF)],["Rear",aeroLevel(P.aeroR)]];
-      aeroNote="Target "+aeroLevel(P.aeroF)+" front / "+aeroLevel(P.aeroR)+" rear. Add the car's downforce Min/Max in Advanced for exact kgf. Many cars can't fit a wing — skip if yours has none.";
+      aeroPairs=[["Front",aeroLevel(aF)],["Rear",aeroLevel(aR)]];
+      aeroNote="Target "+aeroLevel(aF)+" front / "+aeroLevel(aR)+" rear. Add the car's downforce Min/Max in Advanced for exact kgf. Downforce is a grip-vs-drag choice bounded by the car's slider range — many cars can't fit a wing at all.";
     }
     box.appendChild(card("Aero (downforce)",aeroPairs,aeroNote));
 
-    // ---- Gearing (final drive) ----
-    var gearPairs, gearNote;
-    if(i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
-      gearPairs=[["Final drive",fmt(i.finalMin+P.finalBias*(i.finalMax-i.finalMin),2)]];
-      gearNote="Starting ratio for "+i.intent+". Higher number = more acceleration, lower top speed. Dial on the track's longest straight: just hit redline in top gear at its end.";
-    } else {
-      var gdir=P.finalBias>=0.55?"shorter (higher number) — accel":P.finalBias<=0.45?"taller (lower number) — top speed":"mid — tune to track";
-      gearPairs=[["Final drive",gdir]];
-      gearNote="Add the car's Final-drive Min/Max in Advanced for a number, then dial on the longest straight: just hit redline in top gear at its end.";
-    }
-    box.appendChild(card("Gearing",gearPairs,gearNote));
+    // ---- Gearing (per-gear ratios) ----
+    var gl=gearLadder(i,P,p2w);
+    box.appendChild(card("Gearing",gl.pairs,gl.note));
 
     // ---- Tyre pressure ----
     box.appendChild(card("Tyre pressure",[["Front",fmt(P.barF,1)+" bar"],["Rear",fmt(P.barR,1)+" bar"]],"Cold start values. Forza target is ~2.2–2.3 bar HOT — after a lap, drop pressure if a tyre is above that. (Set Forza's units to Metric to see bar.)"));
@@ -348,7 +434,7 @@
 
   // ---- last inputs (so the car's basics survive a reload / app relaunch) ----
   var LAST="forzatune_last_v1";
-  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax"];
+  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax","power","torque","weight","displacement","gears","redline","peakTorqueRPM","gear1","gearTop","tyreDia","topSpeed"];
   function saveLast(){ try{ var o={}; FIELDS.forEach(function(id){ o[id]=$(id).value; }); localStorage.setItem(LAST,JSON.stringify(o)); }catch(e){ /* storage blocked — keep working in-memory */ } }
   function restoreLast(){ try{ var v=localStorage.getItem(LAST); if(!v) return; var o=JSON.parse(v); FIELDS.forEach(function(id){ if(id in o && o[id]!=null) $(id).value=o[id]; }); }catch(e){ /* ignore corrupt cache */ } }
 
@@ -380,7 +466,10 @@
       springMin:i.springMin, springMax:i.springMax, arbMin:i.arbMin, arbMax:i.arbMax,
       dampMin:i.dampMin, dampMax:i.dampMax, rideMin:i.rideMin, rideMax:i.rideMax,
       frontAeroMin:i.frontAeroMin, frontAeroMax:i.frontAeroMax, rearAeroMin:i.rearAeroMin, rearAeroMax:i.rearAeroMax,
-      finalMin:i.finalMin, finalMax:i.finalMax, savedAt:new Date().toISOString()};
+      finalMin:i.finalMin, finalMax:i.finalMax,
+      power:i.power, torque:i.torque, weight:i.weight, displacement:i.displacement,
+      gears:i.gears, redline:i.redline, peakTorqueRPM:i.peakTorqueRPM, gear1:i.gear1, gearTop:i.gearTop, tyreDia:i.tyreDia, topSpeed:i.topSpeed,
+      savedAt:new Date().toISOString()};
   }
   function applyTune(t){
     $("name").value=t.name||""; $("frontDist").value=t.frontDist!=null?t.frontDist:"";
@@ -392,6 +481,7 @@
     $("frontAeroMin").value=t.frontAeroMin!=null?t.frontAeroMin:""; $("frontAeroMax").value=t.frontAeroMax!=null?t.frontAeroMax:"";
     $("rearAeroMin").value=t.rearAeroMin!=null?t.rearAeroMin:""; $("rearAeroMax").value=t.rearAeroMax!=null?t.rearAeroMax:"";
     $("finalMin").value=t.finalMin!=null?t.finalMin:""; $("finalMax").value=t.finalMax!=null?t.finalMax:"";
+    ["power","torque","weight","displacement","gears","redline","peakTorqueRPM","gear1","gearTop","tyreDia","topSpeed"].forEach(function(id){ $(id).value=t[id]!=null?t[id]:""; });
     compute();
   }
 
@@ -446,7 +536,7 @@
   }
 
   function resetFields(){
-    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
+    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax","power","torque","weight","displacement","gears","redline","peakTorqueRPM","gear1","tyreDia","topSpeed"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
     $("drivetrain").value="RWD"; $("intent").value="road";
     $("arbMin").value=1; $("arbMax").value=65; $("dampMin").value=1; $("dampMax").value=20;
     compute();
@@ -472,7 +562,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="20260607-201516";
+  var BUILD="20260607-204009";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
