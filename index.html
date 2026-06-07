@@ -124,6 +124,18 @@
         <div class="field"><label for="rideMin">Ride height — Min (optional)</label><input id="rideMin" type="number" min="0" step="0.1" placeholder="cm or in" /></div>
         <div class="field"><label for="rideMax">Ride height — Max (optional)</label><input id="rideMax" type="number" min="0" step="0.1" placeholder="cm or in" /></div>
       </div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="field"><label for="frontAeroMin">Front downforce — Min (kgf, optional)</label><input id="frontAeroMin" type="number" min="0" step="1" placeholder="read off car" /></div>
+        <div class="field"><label for="frontAeroMax">Front downforce — Max (kgf, optional)</label><input id="frontAeroMax" type="number" min="0" step="1" placeholder="read off car" /></div>
+        <div class="field"><label for="rearAeroMin">Rear downforce — Min (kgf, optional)</label><input id="rearAeroMin" type="number" min="0" step="1" placeholder="read off car" /></div>
+        <div class="field"><label for="rearAeroMax">Rear downforce — Max (kgf, optional)</label><input id="rearAeroMax" type="number" min="0" step="1" placeholder="read off car" /></div>
+      </div>
+      <div class="field" style="margin-top:4px"><label>Final drive — Min / Max (optional, for a gear ratio)</label>
+        <div class="row">
+          <input id="finalMin" type="number" min="0" step="0.01" placeholder="min ratio" aria-label="Final drive min" />
+          <input id="finalMax" type="number" min="0" step="0.01" placeholder="max ratio" aria-label="Final drive max" />
+        </div>
+      </div>
     </details>
     <div class="row" style="margin-top:12px">
       <button id="saveBtn">★ Save tune</button>
@@ -135,7 +147,7 @@
   <div class="results" id="results"></div>
   <div class="row" style="margin-top:10px"><button class="ghost sm" id="copyBtn">⧉ Copy tune</button></div>
 
-  <h2>Gearing &amp; final notes</h2>
+  <h2>Driving &amp; gearing notes</h2>
   <div class="card">
     <div class="tips" id="tips"></div>
   </div>
@@ -164,15 +176,16 @@
 
   // ---- intent presets (community baselines; starting points) ----
   var PRESETS={
-    road:  {springMult:1.00, ride:"min", camberF:-1.2, camberR:-0.8, toeF:0.0, toeR:0.0, caster:5.5, psiF:28, psiR:28, accel:50, decel:20, awdBal:75, brakeBal:50},
-    drift: {springMult:1.05, ride:"min", camberF:-2.5, camberR:-1.0, toeF:-1.0, toeR:0.0, caster:6.5, psiF:30, psiR:32, accel:100, decel:50, awdBal:90, brakeBal:55},
-    dirt:  {springMult:0.85, ride:"mid", camberF:-0.8, camberR:-0.5, toeF:0.0, toeR:0.0, caster:5.0, psiF:26, psiR:26, accel:40, decel:30, awdBal:60, brakeBal:48},
-    cross: {springMult:0.75, ride:"max", camberF:-0.5, camberR:-0.3, toeF:0.0, toeR:0.0, caster:5.0, psiF:24, psiR:24, accel:40, decel:30, awdBal:55, brakeBal:45}
+    road:  {springMult:1.00, ride:"min", camberF:-1.2, camberR:-0.8, toeF:0.0, toeR:0.0, caster:5.5, barF:1.9, barR:1.9, accel:50, decel:20, awdBal:75, brakeBal:50, aeroF:0.85, aeroR:0.95, finalBias:0.50},
+    drift: {springMult:1.05, ride:"min", camberF:-2.5, camberR:-1.0, toeF:-1.0, toeR:0.0, caster:6.5, barF:2.1, barR:2.2, accel:100, decel:50, awdBal:90, brakeBal:55, aeroF:0.30, aeroR:0.60, finalBias:0.65},
+    dirt:  {springMult:0.85, ride:"mid", camberF:-0.8, camberR:-0.5, toeF:0.0, toeR:0.0, caster:5.0, barF:1.8, barR:1.8, accel:40, decel:30, awdBal:60, brakeBal:48, aeroF:0.15, aeroR:0.25, finalBias:0.55},
+    cross: {springMult:0.75, ride:"max", camberF:-0.5, camberR:-0.3, toeF:0.0, toeR:0.0, caster:5.0, barF:1.7, barR:1.7, accel:40, decel:30, awdBal:55, brakeBal:45, aeroF:0.10, aeroR:0.20, finalBias:0.40}
   };
 
   function num(id){ var v=parseFloat(String($(id).value).replace(",",".")); return isFinite(v)?v:null; }
   function clamp(x,lo,hi){ return Math.max(lo,Math.min(hi,x)); }
   function fmt(x,d){ return (Math.round(x*Math.pow(10,d))/Math.pow(10,d)).toFixed(d); }
+  function aeroLevel(f){ return f>=0.7?"high":f>=0.4?"medium":"low"; }
 
   function readInputs(){
     return {
@@ -183,7 +196,10 @@
       springMin:num("springMin"), springMax:num("springMax"),
       arbMin:num("arbMin"), arbMax:num("arbMax"),
       dampMin:num("dampMin"), dampMax:num("dampMax"),
-      rideMin:num("rideMin"), rideMax:num("rideMax")
+      rideMin:num("rideMin"), rideMax:num("rideMax"),
+      frontAeroMin:num("frontAeroMin"), frontAeroMax:num("frontAeroMax"),
+      rearAeroMin:num("rearAeroMin"), rearAeroMax:num("rearAeroMax"),
+      finalMin:num("finalMin"), finalMax:num("finalMax")
     };
   }
 
@@ -276,8 +292,36 @@
     // ---- Brakes ----
     box.appendChild(card("Brakes",[["Balance",P.brakeBal+"% front"],["Pressure","100%"]],"Shift balance rearward a few % if the front locks and washes wide into corners."));
 
+    // ---- Aero (downforce, kgf) ----
+    var aeroPairs, aeroNote;
+    var haveAF=i.frontAeroMin!==null && i.frontAeroMax!==null && i.frontAeroMax>i.frontAeroMin;
+    var haveAR=i.rearAeroMin!==null && i.rearAeroMax!==null && i.rearAeroMax>i.rearAeroMin;
+    if(haveAF||haveAR){
+      aeroPairs=[
+        ["Front", haveAF? fmt(i.frontAeroMin+P.aeroF*(i.frontAeroMax-i.frontAeroMin),0)+" kgf" : "—"],
+        ["Rear",  haveAR? fmt(i.rearAeroMin+P.aeroR*(i.rearAeroMax-i.rearAeroMin),0)+" kgf" : "—"]
+      ];
+      aeroNote="More downforce = more grip but more drag (lower top speed). "+(i.intent==="road"?"Near-max here, rear-biased for high-speed stability.":"Trimmed for "+i.intent+": less drag, more compliance.");
+    } else {
+      aeroPairs=[["Front",aeroLevel(P.aeroF)],["Rear",aeroLevel(P.aeroR)]];
+      aeroNote="Target "+aeroLevel(P.aeroF)+" front / "+aeroLevel(P.aeroR)+" rear. Add the car's downforce Min/Max in Advanced for exact kgf. Many cars can't fit a wing — skip if yours has none.";
+    }
+    box.appendChild(card("Aero (downforce)",aeroPairs,aeroNote));
+
+    // ---- Gearing (final drive) ----
+    var gearPairs, gearNote;
+    if(i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
+      gearPairs=[["Final drive",fmt(i.finalMin+P.finalBias*(i.finalMax-i.finalMin),2)]];
+      gearNote="Starting ratio for "+i.intent+". Higher number = more acceleration, lower top speed. Dial on the track's longest straight: just hit redline in top gear at its end.";
+    } else {
+      var gdir=P.finalBias>=0.55?"shorter (higher number) — accel":P.finalBias<=0.45?"taller (lower number) — top speed":"mid — tune to track";
+      gearPairs=[["Final drive",gdir]];
+      gearNote="Add the car's Final-drive Min/Max in Advanced for a number, then dial on the longest straight: just hit redline in top gear at its end.";
+    }
+    box.appendChild(card("Gearing",gearPairs,gearNote));
+
     // ---- Tyre pressure ----
-    box.appendChild(card("Tyre pressure",[["Front",fmt(P.psiF,1)+" psi"],["Rear",fmt(P.psiR,1)+" psi"]],"Cold start values. Forza target is ~32–33 psi HOT — after a lap, drop pressure if a tyre is above that."));
+    box.appendChild(card("Tyre pressure",[["Front",fmt(P.barF,1)+" bar"],["Rear",fmt(P.barR,1)+" bar"]],"Cold start values. Forza target is ~2.2–2.3 bar HOT — after a lap, drop pressure if a tyre is above that. (Set Forza's units to Metric to see bar.)"));
 
     renderTips(i);
   }
@@ -304,7 +348,7 @@
 
   // ---- last inputs (so the car's basics survive a reload / app relaunch) ----
   var LAST="forzatune_last_v1";
-  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax"];
+  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax"];
   function saveLast(){ try{ var o={}; FIELDS.forEach(function(id){ o[id]=$(id).value; }); localStorage.setItem(LAST,JSON.stringify(o)); }catch(e){ /* storage blocked — keep working in-memory */ } }
   function restoreLast(){ try{ var v=localStorage.getItem(LAST); if(!v) return; var o=JSON.parse(v); FIELDS.forEach(function(id){ if(id in o && o[id]!=null) $(id).value=o[id]; }); }catch(e){ /* ignore corrupt cache */ } }
 
@@ -334,7 +378,9 @@
     var i=readInputs();
     return {name:i.name||"Untitled tune", frontDist:i.frontDist, drivetrain:i.drivetrain, intent:i.intent,
       springMin:i.springMin, springMax:i.springMax, arbMin:i.arbMin, arbMax:i.arbMax,
-      dampMin:i.dampMin, dampMax:i.dampMax, rideMin:i.rideMin, rideMax:i.rideMax, savedAt:new Date().toISOString()};
+      dampMin:i.dampMin, dampMax:i.dampMax, rideMin:i.rideMin, rideMax:i.rideMax,
+      frontAeroMin:i.frontAeroMin, frontAeroMax:i.frontAeroMax, rearAeroMin:i.rearAeroMin, rearAeroMax:i.rearAeroMax,
+      finalMin:i.finalMin, finalMax:i.finalMax, savedAt:new Date().toISOString()};
   }
   function applyTune(t){
     $("name").value=t.name||""; $("frontDist").value=t.frontDist!=null?t.frontDist:"";
@@ -343,6 +389,9 @@
     $("arbMin").value=t.arbMin!=null?t.arbMin:1; $("arbMax").value=t.arbMax!=null?t.arbMax:65;
     $("dampMin").value=t.dampMin!=null?t.dampMin:1; $("dampMax").value=t.dampMax!=null?t.dampMax:20;
     $("rideMin").value=t.rideMin!=null?t.rideMin:""; $("rideMax").value=t.rideMax!=null?t.rideMax:"";
+    $("frontAeroMin").value=t.frontAeroMin!=null?t.frontAeroMin:""; $("frontAeroMax").value=t.frontAeroMax!=null?t.frontAeroMax:"";
+    $("rearAeroMin").value=t.rearAeroMin!=null?t.rearAeroMin:""; $("rearAeroMax").value=t.rearAeroMax!=null?t.rearAeroMax:"";
+    $("finalMin").value=t.finalMin!=null?t.finalMin:""; $("finalMax").value=t.finalMax!=null?t.finalMax:"";
     compute();
   }
 
@@ -397,15 +446,14 @@
   }
 
   function resetFields(){
-    ["name","frontDist","springMin","springMax","rideMin","rideMax"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
+    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
     $("drivetrain").value="RWD"; $("intent").value="road";
     $("arbMin").value=1; $("arbMax").value=65; $("dampMin").value=1; $("dampMax").value=20;
     compute();
   }
 
   // ---- wire up ----
-  ["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax"]
-    .forEach(function(id){ $(id).addEventListener("input",compute); });
+  FIELDS.forEach(function(id){ $(id).addEventListener("input",compute); });
   $("saveBtn").onclick=doSave;
   $("resetBtn").onclick=resetFields;
   $("copyBtn").onclick=copyTune;
@@ -424,7 +472,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="b1780813740";
+  var BUILD="20260607-201516";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
