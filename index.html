@@ -133,6 +133,7 @@
 
   <h2>Suspension baseline</h2>
   <div class="results" id="results"></div>
+  <div class="row" style="margin-top:10px"><button class="ghost sm" id="copyBtn">⧉ Copy tune</button></div>
 
   <h2>Gearing &amp; final notes</h2>
   <div class="card">
@@ -202,6 +203,7 @@
 
   function compute(){
     var i=readInputs();
+    saveLast();
     var err=$("err"); err.textContent="";
     var box=$("results"); box.innerHTML="";
 
@@ -300,6 +302,34 @@
   function load(){ try{ var v=localStorage.getItem(KEY); return v?JSON.parse(v):[]; }catch(e){ return []; } }
   function save(arr){ try{ localStorage.setItem(KEY,JSON.stringify(arr)); }catch(e){ alert("Couldn't save — storage may be full or blocked."); } }
 
+  // ---- last inputs (so the car's basics survive a reload / app relaunch) ----
+  var LAST="forzatune_last_v1";
+  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax"];
+  function saveLast(){ try{ var o={}; FIELDS.forEach(function(id){ o[id]=$(id).value; }); localStorage.setItem(LAST,JSON.stringify(o)); }catch(e){ /* storage blocked — keep working in-memory */ } }
+  function restoreLast(){ try{ var v=localStorage.getItem(LAST); if(!v) return; var o=JSON.parse(v); FIELDS.forEach(function(id){ if(id in o && o[id]!=null) $(id).value=o[id]; }); }catch(e){ /* ignore corrupt cache */ } }
+
+  // ---- copy computed tune as plain text (read the rendered cards, XSS-safe) ----
+  function buildCopyText(){
+    var i=readInputs();
+    var lines=[(i.name||"Tune")+" — "+i.drivetrain+" · "+i.intent+(i.frontDist!=null?" · "+i.frontDist+"% front":""),""];
+    Array.prototype.forEach.call($("results").querySelectorAll(".res"),function(c){
+      var title=c.querySelector("h3"); if(title) lines.push(title.textContent+":");
+      Array.prototype.forEach.call(c.querySelectorAll(".pair"),function(p){
+        var k=p.querySelector(".k"), v=p.querySelector(".v");
+        if(k&&v) lines.push("  "+k.textContent+": "+v.textContent);
+      });
+      lines.push("");
+    });
+    return lines.join("\n").trim();
+  }
+  function copyDone(){ var b=$("copyBtn"); var o=b.textContent; b.textContent="✓ Copied"; setTimeout(function(){ b.textContent=o; },1400); }
+  function fallbackCopy(txt){ try{ var ta=document.createElement("textarea"); ta.value=txt; ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta); ta.focus(); ta.select(); document.execCommand("copy"); ta.remove(); copyDone(); }catch(e){ alert("Couldn't copy automatically. Here's the tune:\n\n"+txt); } }
+  function copyTune(){
+    var txt=buildCopyText(); if(!txt) return;
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(copyDone).catch(function(){ fallbackCopy(txt); }); }
+    else fallbackCopy(txt);
+  }
+
   function snapshot(){
     var i=readInputs();
     return {name:i.name||"Untitled tune", frontDist:i.frontDist, drivetrain:i.drivetrain, intent:i.intent,
@@ -378,10 +408,12 @@
     .forEach(function(id){ $(id).addEventListener("input",compute); });
   $("saveBtn").onclick=doSave;
   $("resetBtn").onclick=resetFields;
+  $("copyBtn").onclick=copyTune;
   $("exportBtn").onclick=exportAll;
   $("importBtn").onclick=function(){ $("importFile").click(); };
   $("importFile").addEventListener("change",function(e){ if(e.target.files[0]) importAll(e.target.files[0]); e.target.value=""; });
 
+  restoreLast();
   compute();
   renderSaved();
 })();
@@ -392,7 +424,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="20260606192045";
+  var BUILD="b1780813740";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
