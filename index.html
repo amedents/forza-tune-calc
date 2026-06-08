@@ -140,41 +140,17 @@
       </div>
     </details>
 
-    <details>
-      <summary>Engine &amp; gearing (optional — for exact per-gear ratios)</summary>
-      <div class="grid3" style="margin-top:10px">
-        <div class="field"><label for="power">Power (kW)</label><input id="power" type="number" min="0" step="1" placeholder="e.g. 300" /></div>
-        <div class="field"><label for="torque">Torque (Nm)</label><input id="torque" type="number" min="0" step="1" placeholder="e.g. 450" /></div>
-        <div class="field"><label for="weight">Weight (kg)</label><input id="weight" type="number" min="0" step="1" placeholder="e.g. 1400" /></div>
-      </div>
-      <div class="grid3">
-        <div class="field"><label for="displacement">Displacement (L)</label><input id="displacement" type="number" min="0" step="0.1" placeholder="e.g. 3.0" /></div>
-        <div class="field"><label for="gears">Number of gears</label><input id="gears" type="number" min="2" max="10" step="1" placeholder="e.g. 6" /></div>
-        <div class="field"><label for="gear1">1st gear ratio</label><input id="gear1" type="number" min="0" step="0.01" placeholder="read off car" /></div>
-      </div>
-      <div class="grid3">
-        <div class="field"><label for="gearTop">Top gear ratio</label><input id="gearTop" type="number" min="0" step="0.01" placeholder="read off car" /></div>
-        <div class="field"><label for="redline">Redline RPM (shift point)</label><input id="redline" type="number" min="0" step="100" placeholder="e.g. 7000" /></div>
-        <div class="field"><label for="peakTorqueRPM">Peak-torque RPM</label><input id="peakTorqueRPM" type="number" min="0" step="100" placeholder="e.g. 4500" /></div>
-      </div>
-      <div class="grid3">
-        <div class="field"><label for="tyreDia">Tyre diameter (cm)</label><input id="tyreDia" type="number" min="0" step="0.5" placeholder="e.g. 65" /></div>
-        <div class="field"><label for="topSpeed">Target top speed (km/h)</label><input id="topSpeed" type="number" min="0" step="5" placeholder="e.g. 300" /></div>
-        <div class="field"><label for="cornerExit">Slowest corner exit (km/h)</label><input id="cornerExit" type="number" min="0" step="5" placeholder="e.g. 60" /></div>
-      </div>
-      <div class="grid3">
-        <div class="field"><label for="muOverride">Grip μ (blank = from surface)</label><input id="muOverride" type="number" min="0" step="0.05" placeholder="auto" /></div>
-        <div class="field" style="grid-column:span 2">
-          <label>Real torque curve (FH6 telemetry)</label>
-          <div class="row">
-            <button type="button" class="ghost sm" id="curveBtn">⬆ Import torque curve</button>
-            <button type="button" class="ghost sm" id="curveClear" style="display:none">✕ Clear</button>
-            <span class="note good" id="curveStatus" style="margin-top:0">no curve loaded</span>
-          </div>
-          <input type="file" id="curveFile" accept="application/json,.json" style="display:none" />
+    <details open>
+      <summary>Car profile (from FH6 telemetry — powers the gearing &amp; launch optimizer)</summary>
+      <div class="field" style="margin-top:10px">
+        <div class="row">
+          <button type="button" class="ghost sm" id="curveBtn">⬆ Import car profile</button>
+          <button type="button" class="ghost sm" id="curveClear" style="display:none">✕ Clear</button>
+          <span class="note good" id="curveStatus" style="margin-top:0">no profile loaded</span>
         </div>
+        <input type="file" id="curveFile" accept="application/json,.json" style="display:none" />
       </div>
-      <div class="note">All optional. Fill <b>gears + 1st &amp; top gear ratios</b> for the exact ladder; add <b>redline + peak-torque RPM</b> to check where each upshift lands the engine, and <b>tyre diameter + top speed</b> for the final drive and a km/h-at-redline readout. For the <b>first-gear optimizer</b>, add <b>weight, tyre diameter, slowest corner-exit speed</b> and import a torque curve captured with the <code>capture-tool</code> (reads FH6's real torque output). Read the rest off Forza's tuning &amp; tyre-upgrade screens.</div>
+      <div class="note">No more typing engine specs. Run <code>capture-tool/fh6-torque-capture.py</code>, then in FH6 do <b>one full-throttle pull from a standstill up through the gears</b>. It measures the real torque curve, gear ratios, tyre size, weight, grip and your actual 0–100 — import the JSON here and the <b>Gearing</b> card + <b>launch optimizer</b> fill themselves. (Front weight % and the spring/ARB/damping/aero ranges below can't be read from telemetry, so they stay manual.)</div>
     </details>
     <div class="row" style="margin-top:12px">
       <button id="saveBtn">★ Save tune</button>
@@ -191,7 +167,7 @@
     <div class="tips" id="tips"></div>
   </div>
 
-  <h2>First-gear optimizer (corner exit)</h2>
+  <h2>Launch optimizer (race start)</h2>
   <div id="optimizer"></div>
 
   <h2>Saved tunes (this device)</h2>
@@ -243,11 +219,7 @@
       rideMin:num("rideMin"), rideMax:num("rideMax"),
       frontAeroMin:num("frontAeroMin"), frontAeroMax:num("frontAeroMax"),
       rearAeroMin:num("rearAeroMin"), rearAeroMax:num("rearAeroMax"),
-      finalMin:num("finalMin"), finalMax:num("finalMax"),
-      power:num("power"), torque:num("torque"), weight:num("weight"), displacement:num("displacement"),
-      gears:num("gears"), redline:num("redline"), peakTorqueRPM:num("peakTorqueRPM"),
-      gear1:num("gear1"), gearTop:num("gearTop"), tyreDia:num("tyreDia"), topSpeed:num("topSpeed"),
-      cornerExit:num("cornerExit"), muOverride:num("muOverride")
+      finalMin:num("finalMin"), finalMax:num("finalMax")
     };
   }
 
@@ -265,106 +237,40 @@
     return c;
   }
 
-  // ---- full gear ladder; degrades gracefully when fields are blank ----
-  // Anchors: 1st gear (launch) and top gear (top speed) are read off the car. The middle gears are a
-  // geometric-progressive interpolation between them — a constant base step kbar=(top/1st)^(1/(N-1)),
-  // log-skewed so low-gear gaps are wider (tame wheelspin) and top gaps tighter (hold revs vs drag),
-  // while preserving both endpoints exactly. Final drive scales the whole set for top speed.
-  // speed at redline per gear (km/h) = redline * pi * tyreDiaMetres * 0.06 / (gearRatio * finalDrive).
-  function progFor(p2w,t2w,specOut){
-    // low-gear gap width tracks wheelspin tendency — torque-to-weight is the better predictor, fall back to power-to-weight
-    var prog = t2w!==null ? clamp(0.10 + (t2w-0.25)*0.30, 0.05, 0.22)
-                          : clamp(0.10 + (p2w!==null?(p2w-0.10)*0.6:0), 0.05, 0.22);
-    if(specOut!==null) prog=clamp(prog-(specOut-90)*0.0007, 0.05, 0.22); // peaky engines (high kW/L) → tighter
-    return prog;
-  }
-  // geometric-progressive ladder between fixed 1st & top gears (both endpoints preserved exactly)
-  function spaceRatios(gear1,gTop,N,prog){
-    var kbar=Math.pow(gTop/gear1, 1/(N-1)), ratios=[gear1], steps=[];
-    for(var s=1;s<=N-1;s++){
-      var c=(N-2)>0? ((s-1)/(N-2)-0.5) : 0;       // -0.5 (low gap) .. +0.5 (high gap); symmetric -> endpoints preserved
-      var step=kbar*Math.exp(prog*(c*2));         // low gap: smaller step (bigger drop); high gap: larger step
-      steps.push(step); ratios.push(ratios[s-1]*step);
-    }
-    ratios[N-1]=gTop;                              // pin exact top gear (guard float drift)
-    return {ratios:ratios, steps:steps};
-  }
-  // final drive: from tyre+top-speed if given, else intent bias nudged by power-to-weight; clamped to slider range
-  function finalDrive(i,P,p2w,gTop){
-    var diaM=(i.tyreDia!==null && i.tyreDia>0)? i.tyreDia/100 : null;
-    var fd=null, src="", clamped=false;
-    if(diaM!==null && i.topSpeed!==null && i.topSpeed>0 && i.redline!==null){
-      fd=i.redline*Math.PI*diaM*0.06/(gTop*i.topSpeed); src="≈"+Math.round(i.topSpeed)+" km/h in top";
-    }
-    if(fd===null && i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
-      var bias=P.finalBias;
-      if(p2w!==null) bias=clamp(bias-(p2w-0.12)*0.8, 0, 1); // powerful cars: longer gears for traction (lower bias); weak: shorter for punch
-      fd=i.finalMin+bias*(i.finalMax-i.finalMin); src=(p2w!==null?"intent + power-to-weight":"intent baseline");
-    }
-    if(fd!==null && i.finalMin!==null && i.finalMax!==null && i.finalMax>i.finalMin){
-      var cl=clamp(fd,i.finalMin,i.finalMax); if(cl!==fd) clamped=true; fd=cl;
-    }
-    return {fd:fd, src:src, clamped:clamped};
-  }
-
-  function gearLadder(i,P,p2w,t2w){
-    var N = i.gears!==null ? Math.round(i.gears) : null;
-    if(N===null || N<2 || N>10)
-      return {pairs:[["Gears","—"]], note:"Enter the car's number of gears (2–10) and its 1st-gear ratio in the Engine & gearing section to build the full ladder."};
-    if(i.gear1===null || i.gear1<=0)
-      return {pairs:[["1st gear","—"]], note:"Enter the car's 1st-gear ratio (read it off the gearing sliders) to compute every gear."};
-    var haveTop=(i.gearTop!==null && i.gearTop>0 && i.gearTop<i.gear1);
-    var gTop=haveTop? i.gearTop : i.gear1*Math.pow(0.80, N-1);  // light fallback: typical 0.80 step
-    var specOut=(i.power!==null && i.displacement!==null && i.displacement>0)? i.power/i.displacement : null;
-    var prog=progFor(p2w,t2w,specOut);
-    var sp=spaceRatios(i.gear1,gTop,N,prog), ratios=sp.ratios, steps=sp.steps;
-    var redline=i.redline, diaM=(i.tyreDia!==null && i.tyreDia>0)? i.tyreDia/100 : null;
-    var FD=finalDrive(i,P,p2w,gTop), fd=FD.fd, fdSrc=FD.src, fdClamped=FD.clamped;
-    var pairs=[];
-    if(fd!==null) pairs.push(["Final drive",fmt(fd,2)+(fdSrc?" ("+fdSrc+")":"")]);
-    for(var g=0;g<N;g++){
-      var v=fmt(ratios[g],2);
-      if(diaM!==null && fd!==null && redline!==null){ v+="  ·  "+Math.round(redline*Math.PI*diaM*0.06/(ratios[g]*fd))+" km/h"; }
-      pairs.push(["Gear "+(g+1),v]);
-    }
-    var bits=[];
-    bits.push(haveTop? "Geometric-progressive spread from your 1st ("+fmt(i.gear1,2)+") to top ("+fmt(gTop,2)+") gear."
-                     : "No top-gear entered — assumed a typical spread (top ≈ "+fmt(gTop,2)+"). Add the car's top-gear ratio for the exact spread.");
-    if(redline!==null){
-      var loL=Math.round(redline*Math.min.apply(null,steps)), hiL=Math.round(redline*Math.max.apply(null,steps));
-      var lt="At "+Math.round(redline)+" rpm, upshifts land the engine ~"+loL+"–"+hiL+" rpm";
-      if(i.peakTorqueRPM!==null) lt+=" — keep that near your "+Math.round(i.peakTorqueRPM)+" rpm torque peak (wider gears drop further)";
-      bits.push(lt+".");
-    } else bits.push("Add redline (+ peak-torque RPM) to see where each upshift lands the engine.");
-    if(p2w!==null||t2w!==null){
-      var pm=(p2w!==null?fmt(p2w*1000,0)+" kW/t":"")+((p2w!==null&&t2w!==null)?", ":"")+(t2w!==null?fmt(t2w*1000,0)+" Nm/t":"");
-      bits.push(pm+" → "+(prog>0.13?"wider":"moderate")+" low-gear gaps to tame wheelspin"+(p2w!==null?"; powerful cars also lean to longer overall gearing for traction":"")+".");
-    }
-    if(fdClamped) bits.push("Final drive hit this car's slider limit, so real top speed will differ from the target — nudge the top-gear ratio to compensate.");
-    if(diaM===null) bits.push("Add tyre diameter (cm) + top speed for the final drive and km/h-at-redline readout.");
-    bits.push("Set final drive first on the longest straight, then fine-trim gears by feel.");
-    return {pairs:pairs, note:bits.join(" ")};
-  }
-
-  // ===== Torque-curve import + corner-exit simulator =====================
-  // Curve is captured from FH6 Data Out telemetry (see capture-tool/). It is the
-  // car's REAL wide-open-throttle torque, so the simulator below runs on true
-  // numbers; traction (mu) and drag are estimates, so trust the RANKING of
-  // first-gear ratios, not the absolute times (confirm the winner with telemetry).
+  // ===== Imported car profile (FH6 telemetry) + standing-start launch sim =====
+  // A profile is captured by capture-tool/fh6-torque-capture.py from one full-throttle
+  // pull: real torque curve, per-gear ratios (gear x final drive), tyre radius, MEASURED
+  // mass and grip (peak launch g), plus the real 0-100 + wheelspin used to sanity-check
+  // the sim. Older "torque-curve" exports (curve only) still import, but the gearing &
+  // launch features stay locked until a full profile is supplied.
   function setCurve(c){ CURVE=c; try{ if(c) localStorage.setItem(CURVEKEY,JSON.stringify(c)); else localStorage.removeItem(CURVEKEY); }catch(e){} }
   function loadCurve(){ try{ var v=localStorage.getItem(CURVEKEY); CURVE=v?JSON.parse(v):null; }catch(e){ CURVE=null; } }
-  function validCurve(c){ return c && c.type==="torque-curve" && Array.isArray(c.curve) && c.curve.length>=3 &&
-    c.curve.every(function(p){ return p && isFinite(p.rpm) && isFinite(p.torque); }); }
+  function validCurve(c){
+    if(!c) return false;
+    if(c.type==="car-profile") return c.engine && Array.isArray(c.engine.curve) && c.engine.curve.length>=3;
+    if(Array.isArray(c.curve)) return c.curve.length>=3 && c.curve.every(function(p){ return p && isFinite(p.rpm) && isFinite(p.torque); });
+    return false;
+  }
   function normCurve(c){
-    var pts=c.curve.filter(function(p){ return isFinite(p.rpm)&&isFinite(p.torque)&&p.torque>0; })
+    var prof=c.type==="car-profile", e=prof? c.engine : c;
+    var pts=e.curve.filter(function(p){ return isFinite(p.rpm)&&isFinite(p.torque)&&p.torque>0; })
                    .map(function(p){ return {rpm:+p.rpm,torque:+p.torque,power:isFinite(p.power)?+p.power:p.torque*p.rpm*Math.PI/30}; })
                    .sort(function(a,b){ return a.rpm-b.rpm; });
     var pt=pts[0], pp=pts[0];
     pts.forEach(function(p){ if(p.torque>pt.torque)pt=p; if(p.power>pp.power)pp=p; });
-    return {type:"torque-curve", curve:pts, car:c.car||null,
-            idleRpm:isFinite(c.idleRpm)?+c.idleRpm:pts[0].rpm,
-            maxRpm:isFinite(c.maxRpm)?+c.maxRpm:pts[pts.length-1].rpm,
-            peakTorque:{rpm:pt.rpm,torque:pt.torque}, peakPower:{rpm:pp.rpm,power:pp.power}};
+    return {
+      isProfile: prof, type: c.type, curve: pts, car: c.car||null,
+      idleRpm: isFinite(e.idleRpm)?+e.idleRpm:pts[0].rpm,
+      maxRpm: isFinite(e.maxRpm)?+e.maxRpm:pts[pts.length-1].rpm,
+      peakTorque: (e.peakTorque&&isFinite(e.peakTorque.rpm))? {rpm:+e.peakTorque.rpm,torque:+e.peakTorque.torque} : {rpm:pt.rpm,torque:pt.torque},
+      peakPower:  (e.peakPower&&isFinite(e.peakPower.rpm))? {rpm:+e.peakPower.rpm,power:+e.peakPower.power} : {rpm:pp.rpm,power:pp.power},
+      mass: prof&&isFinite(c.mass)? +c.mass : null,
+      tyreRadius: prof&&isFinite(c.tyreRadius)? +c.tyreRadius : null,
+      gearRatios: prof&&c.gearRatios? c.gearRatios : {},
+      drag: prof&&c.drag? c.drag : {cdA:0.72,crr:0.013},
+      measuredLaunch: prof&&c.measuredLaunch? c.measuredLaunch : null,
+      drivetrain: (c.car&&c.car.drivetrain)||null
+    };
   }
   function torqueAt(pts,rpm){
     if(rpm<=pts[0].rpm) return pts[0].torque;
@@ -373,71 +279,86 @@
       return a.torque+(b.torque-a.torque)*(rpm-a.rpm)/(b.rpm-a.rpm); } }
     return pts[pts.length-1].torque;
   }
-  // traction share on the DRIVEN axle (static weight + a little launch transfer), 0..0.97
+  // driven-axle grip share when grip must be ESTIMATED (no measured launch): static + transfer
   function tractionShare(drivetrain,frontFrac){
     var rear=1-frontFrac;
     if(drivetrain==="AWD") return 0.95;
     if(drivetrain==="FWD") return clamp(frontFrac-0.05,0.2,0.9);
-    return clamp(rear+0.08,0.2,0.97); // RWD: rear static + transfer under power
+    return clamp(rear+0.08,0.2,0.97);
   }
-  // simulate full-throttle acceleration from v0 over `dist` metres; returns time + the gear exited in
-  function simExit(ratios,fd,o){
-    var pts=o.curve, dt=0.01, x=0, v=o.v0, t=0, rho=1.225, g=9.81, rW=o.tyreRadius, eff=o.eff, tcap=10;
-    function rpmAt(v,r){ return v/(2*Math.PI*rW)*60*r*fd; }
-    var gear=ratios.length-1;
-    for(var gi=0; gi<ratios.length; gi++){ if(rpmAt(o.v0,ratios[gi])<=o.redline){ gear=gi; break; } }
-    var startGear=gear;
-    while(x<o.dist && t<tcap){
+  // SHED = grip lost when a tyre spins past peak slip. CALIBRATION KNOB — tune to match FH6.
+  var SHED=0.25;
+  // standing-start launch. ratios are TOTAL (gear x final). Returns time to reach targetV.
+  function simLaunch(ratios,o){
+    var pts=o.curve, dt=0.01, v=0.5, t=0, rho=1.225, g=9.81, rW=o.tyreRadius, eff=o.eff, tcap=14, spun=false;
+    function rpmAt(v,r){ return v/(2*Math.PI*rW)*60*r; }
+    var gear=0;
+    while(v<o.targetV && t<tcap){
       var rpm=rpmAt(v,ratios[gear]);
       if(rpm>=o.redline && gear<ratios.length-1){ gear++; rpm=rpmAt(v,ratios[gear]); }
       var Te=torqueAt(pts, clamp(rpm,pts[0].rpm,o.redline));
-      var Fengine=Te*ratios[gear]*fd*eff/rW;
-      var Fpeak=o.mu*o.mass*g*o.share;        // grip at optimal tyre slip
-      // a too-short gear drives wheel force past peak slip -> tyre spins -> grip sheds toward kinetic.
-      // This is the whole reason 1st-gear ratio matters; without it the launch is grip-limited and flat.
-      var Fdrive = Fengine<=Fpeak ? Fengine : Fpeak*(1-0.25*clamp((Fengine-Fpeak)/Fpeak,0,1));
-      var Fdrag=0.5*rho*o.cdA*v*v, Frr=0.013*o.mass*g;
-      var a=(Fdrive-Fdrag-Frr)/o.mass;
-      if(a<-6)a=-6;
-      v+=a*dt; if(v<0.5)v=0.5; x+=v*dt; t+=dt;
+      var Fengine=Te*ratios[gear]*eff/rW;
+      var Fmax=o.gripF;                       // measured (or estimated) grip ceiling
+      var Fdrive;
+      if(Fengine<=Fmax){ Fdrive=Fengine; }
+      else { spun=true; Fdrive=Fmax*(1-SHED*clamp((Fengine-Fmax)/Fmax,0,1)); }
+      var Fdrag=0.5*rho*o.cdA*v*v, Frr=o.crr*o.mass*g;
+      var a=(Fdrive-Fdrag-Frr)/o.mass; if(a<-6)a=-6;
+      v+=a*dt; if(v<0.5)v=0.5; t+=dt;
     }
-    return {time:t, startGear:startGear+1, usedFirst:startGear===0};
+    return {time:t, spun:spun, reached:v>=o.targetV};
   }
-  // sweep 1st-gear ratio, rebuild the ladder each time, rank by corner-exit time
-  function optimizeFirstGear(i,P,p2w,t2w){
+  // sweep the 1st-gear TOTAL ratio (other gears fixed), rank by 0-100 km/h time
+  function optimizeLaunch(i){
     if(!CURVE) return {state:"nocurve"};
-    var N=i.gears!==null?Math.round(i.gears):null;
-    if(N===null||N<2||N>10||i.gear1===null||i.gear1<=0) return {state:"nogears"};
-    if(i.tyreDia===null||i.tyreDia<=0) return {state:"notyre"};
-    if(i.weight===null||i.weight<=0) return {state:"noweight"};
-    if(i.cornerExit===null||i.cornerExit<=0) return {state:"nocorner"};
-    var haveTop=(i.gearTop!==null && i.gearTop>0 && i.gearTop<i.gear1);
-    var gTop=haveTop? i.gearTop : i.gear1*Math.pow(0.80,N-1);
-    var specOut=(i.power!==null && i.displacement!==null && i.displacement>0)? i.power/i.displacement : null;
-    var prog=progFor(p2w,t2w,specOut);
-    var redline=CURVE.maxRpm;
-    var FD=finalDrive(i,P,p2w,gTop); var fd=FD.fd;
-    if(fd===null) fd=3.5; // no top-speed/slider info: neutral default so ranking still works
-    var muDef={road:1.15,drift:1.0,dirt:0.55,cross:0.5}[i.intent]||1.0;
-    var mu=(i.muOverride!==null && i.muOverride>0)? i.muOverride : muDef;
-    var o={curve:CURVE.curve, v0:i.cornerExit/3.6, mass:i.weight, mu:mu,
-           share:tractionShare(i.drivetrain,i.frontDist/100),
-           tyreRadius:i.tyreDia/200, eff:(i.drivetrain==="AWD"?0.85:0.90),
-           cdA:0.72, redline:redline, dist:120};
-    var lo=i.gear1*0.78, hi=i.gear1*1.45, steps=16, cands=[];
+    if(!CURVE.isProfile) return {state:"curveonly"};
+    if(!CURVE.mass||!CURVE.tyreRadius) return {state:"incomplete"};
+    var gr=CURVE.gearRatios||{};
+    var keys=Object.keys(gr).map(Number).filter(function(n){return n>=1;}).sort(function(a,b){return a-b;});
+    if(!keys.length) return {state:"nogears"};
+    var cur1 = gr["1"]!=null ? gr["1"] : (gr["2"]!=null ? gr["2"]*1.45 : null);
+    if(cur1===null) return {state:"nogears"};
+    var cur1Est = gr["1"]==null;
+    var rest=[]; keys.forEach(function(k){ if(k>=2) rest.push(gr[String(k)]); });
+    var mass=CURVE.mass, rW=CURVE.tyreRadius;
+    // grip ceiling: prefer the MEASURED launch (only if the tyre actually broke traction), else estimate
+    var L=CURVE.measuredLaunch, gripF, gripSrc, m0to100=L?L.zeroTo100Kmh:null, mSpin=L?L.peakWheelSlip:null;
+    if(L && L.peakWheelSlip!=null && L.peakWheelSlip>=0.06 && L.peakAccelMs2>0){
+      gripF=mass*L.peakAccelMs2; gripSrc="measured launch";
+    } else {
+      var muDef={road:1.15,drift:1.0,dirt:0.55,cross:0.5}[i.intent]||1.0;
+      gripF=mass*9.81*muDef*tractionShare(CURVE.drivetrain||i.drivetrain, i.frontDist/100);
+      gripSrc="estimated (no wheelspin in capture)";
+    }
+    var o={curve:CURVE.curve, targetV:27.78, mass:mass, gripF:gripF, tyreRadius:rW,
+           eff:((CURVE.drivetrain||i.drivetrain)==="AWD"?0.85:0.90),
+           cdA:(CURVE.drag&&CURVE.drag.cdA)||0.72, crr:(CURVE.drag&&CURVE.drag.crr)||0.013, redline:CURVE.maxRpm};
+    var lo=cur1*0.70, hi=cur1*1.45, steps=18, cands=[];
     for(var m=0;m<=steps;m++){
       var g1=lo+(hi-lo)*m/steps;
-      if(g1<=gTop) continue;                    // 1st must stay taller than top
-      var ratios=spaceRatios(g1,gTop,N,prog).ratios;
-      var r=simExit(ratios,fd,o);
-      cands.push({gear1:g1, time:r.time, exitGear:r.startGear, usedFirst:r.usedFirst});
+      var r=simLaunch([g1].concat(rest),o);
+      cands.push({ratio:g1, time:r.reached?r.time:99, spun:r.spun});
     }
-    if(!cands.length) return {state:"empty"};
     var best=cands[0], tmin=cands[0].time, tmax=cands[0].time;
-    cands.forEach(function(c){ if(c.time<best.time) best=c; if(c.time<tmin) tmin=c.time; if(c.time>tmax) tmax=c.time; });
-    var spread=tmax-tmin;   // how much 1st-gear ratio actually changes this corner; tiny => traction-limited, ratio barely matters
-    var cur=null; cands.forEach(function(c){ if(cur===null||Math.abs(c.gear1-i.gear1)<Math.abs(cur.gear1-i.gear1)) cur=c; });
-    return {state:"ok", best:best, current:cur, cands:cands, spread:spread, mu:mu, fd:fd, exitGear:best.exitGear, usedFirst:best.usedFirst, v0:i.cornerExit};
+    cands.forEach(function(c){ if(c.time<best.time) best=c; if(c.time<tmin)tmin=c.time; if(c.time>tmax)tmax=c.time; });
+    var curSim=simLaunch([cur1].concat(rest),o);
+    return {state:"ok", best:best, cur1:cur1, cur1Est:cur1Est, curTime:curSim.reached?curSim.time:null,
+            spread:tmax-tmin, pctChange:(best.ratio/cur1-1)*100, gripSrc:gripSrc,
+            measured0to100:m0to100, measuredSpin:mSpin};
+  }
+  // Gearing card: real captured gears when a profile is loaded, else a hint
+  function gearingCard(i){
+    if(CURVE && CURVE.isProfile && CURVE.gearRatios && Object.keys(CURVE.gearRatios).length){
+      var gr=CURVE.gearRatios, rW=CURVE.tyreRadius, redline=CURVE.maxRpm;
+      var keys=Object.keys(gr).map(Number).sort(function(a,b){return a-b;});
+      var pairs=keys.map(function(k){
+        var tot=gr[String(k)], val=fmt(tot,2)+" total";
+        if(rW && redline){ val+="  ·  "+Math.round(redline*2*Math.PI*rW/(60*tot)*3.6)+" km/h"; }
+        return ["Gear "+k, val];
+      });
+      return {pairs:pairs, note:"Your car's REAL ratios, measured from telemetry (total = gear × final drive); speeds are at redline ("+Math.round(redline)+" rpm). To change 1st, use the launch optimizer below."};
+    }
+    return {pairs:[["Gears","—"]], note:"Import a car profile (Car profile section) captured with the capture-tool to see your real gear ratios and run the launch optimizer."};
   }
 
   function compute(){
@@ -450,12 +371,14 @@
     var fd=i.frontDist/100, rd=1-fd;
     var P=PRESETS[i.intent]||PRESETS.road;
 
-    // ---- power-to-weight (kW/kg) + torque-to-weight (Nm/kg): drive aero bias, gear spacing & final-drive length ----
-    var p2w=(i.power!==null && i.weight!==null && i.power>0 && i.weight>0)? i.power/i.weight : null;
-    var t2w=(i.torque!==null && i.weight!==null && i.torque>0 && i.weight>0)? i.torque/i.weight : null;
-
-    // an imported real torque curve fills redline / peak-torque RPM when those fields are blank
-    if(CURVE){ if(i.redline===null) i.redline=CURVE.maxRpm; if(i.peakTorqueRPM===null) i.peakTorqueRPM=Math.round(CURVE.peakTorque.rpm); }
+    // a loaded car profile supplies the engine numbers (no manual typing) for the aero nudge below
+    if(CURVE){
+      i.redline=CURVE.maxRpm; i.peakTorqueRPM=Math.round(CURVE.peakTorque.rpm);
+      if(CURVE.isProfile){ i.weight=CURVE.mass; i.power=CURVE.peakPower.power/1000; i.torque=CURVE.peakTorque.torque; }
+    }
+    // ---- power-to-weight (kW/kg) + torque-to-weight (Nm/kg): drive the aero bias nudge ----
+    var p2w=(i.power!=null && i.weight!=null && i.power>0 && i.weight>0)? i.power/i.weight : null;
+    var t2w=(i.torque!=null && i.weight!=null && i.torque>0 && i.weight>0)? i.torque/i.weight : null;
 
     // Cards are appended in FH6's in-game tuning-tab order so the app reads top-to-bottom like the game:
     // 1 Tires · 2 Gearing · 3 Alignment · 4 Antiroll Bars · 5 Springs · 6 Damping · 7 Aero · 8 Brakes · 9 Differential.
@@ -464,8 +387,8 @@
     // ---- 1. Tires → Tyre pressure ----
     box.appendChild(card("Tyre pressure",[["Front",fmt(P.barF,1)+" bar"],["Rear",fmt(P.barR,1)+" bar"]],"Cold start values. Forza target is ~2.2–2.3 bar HOT — after a lap, drop pressure if a tyre is above that. (Set Forza's units to Metric to see bar.)"));
 
-    // ---- 2. Gearing (per-gear ratios) ----
-    var gl=gearLadder(i,P,p2w,t2w);
+    // ---- 2. Gearing (real captured ratios when a profile is loaded) ----
+    var gl=gearingCard(i);
     box.appendChild(card("Gearing",gl.pairs,gl.note));
 
     // ---- 3. Alignment ----
@@ -555,57 +478,57 @@
     box.appendChild(card("Differential",diffPairs,"Higher accel locks the driven axle under power (more stability, more push); lower frees rotation."));
 
     renderTips(i);
-    renderOptimizer(i,P,p2w,t2w);
+    renderOptimizer(i);
   }
 
-  // ---- first-gear optimizer card (corner exit) ----
-  function renderOptimizer(i,P,p2w,t2w){
+  // ---- launch optimizer card (standing start, 0-100 km/h) ----
+  function renderOptimizer(i){
     var box=$("optimizer"); if(!box) return; box.innerHTML="";
     function note(txt){ var d=document.createElement("div"); d.className="note"; d.textContent=txt; box.appendChild(d); }
-    if(!CURVE){ note("Import a torque curve (in Engine & gearing) to simulate corner-exit acceleration and get the fastest 1st-gear ratio. Capture it from FH6 with the capture-tool in this app's folder — it reads the game's real torque output."); return; }
+    if(!CURVE){ note("Import a car profile (Car profile section) to simulate the race start and get the fastest 1st-gear ratio. Capture it from FH6 with the capture-tool — one full-throttle launch grabs everything (curve, ratios, tyre size, mass, grip)."); return; }
     var sum=document.createElement("div"); sum.className="note";
-    sum.textContent="Loaded curve: peak "+Math.round(CURVE.peakTorque.torque)+" Nm @ "+Math.round(CURVE.peakTorque.rpm)
-      +" rpm, "+Math.round(CURVE.peakPower.power/1000)+" kW @ "+Math.round(CURVE.peakPower.rpm)+" rpm, redline "
-      +Math.round(CURVE.maxRpm)+" rpm"+(CURVE.car&&CURVE.car.pi?" · PI "+CURVE.car.pi:"")+".";
+    sum.textContent="Profile: peak "+Math.round(CURVE.peakTorque.torque)+" Nm @ "+Math.round(CURVE.peakTorque.rpm)+" rpm, redline "
+      +Math.round(CURVE.maxRpm)+(CURVE.mass?", "+CURVE.mass+" kg":"")+(CURVE.tyreRadius?", tyre r "+CURVE.tyreRadius+" m":"")
+      +(CURVE.car&&CURVE.car.pi?" · PI "+CURVE.car.pi:"")+".";
     box.appendChild(sum);
-    var r=optimizeFirstGear(i,P,p2w,t2w);
+    var r=optimizeLaunch(i);
     if(r.state!=="ok"){
-      var hints={nogears:"the number of gears + 1st-gear ratio",notyre:"tyre diameter (cm)",noweight:"car weight (kg)",
-        nocorner:"the slowest corner's exit speed (km/h)",empty:"valid gear inputs"};
-      note("To simulate, also add "+(hints[r.state]||"the Engine & gearing inputs")+".");
+      var hints={curveonly:"This is an old torque-curve-only export. Re-capture a full car profile (adds mass, gear ratios, tyre size) with the latest capture-tool.",
+        incomplete:"The profile is missing measured mass or tyre radius — do a clean full-throttle pull on a flat straight so the tool can measure them.",
+        nogears:"No gear ratios were measured — during capture, drive up through all the gears at full throttle."};
+      note(hints[r.state]||"Import a complete car profile to run the launch optimizer.");
       return;
     }
-    var deltaPct=r.current? (r.current.time-r.best.time)/r.current.time*100 : 0;
-    var lowSens=r.spread<0.04;   // ratio barely changes the corner -> don't over-claim a precise winner
-    var sens=lowSens?"low — barely matters here":r.spread<0.12?"moderate":"high";
+    var lowSens=r.spread<0.05, measured=r.gripSrc.indexOf("measured")===0;
     var pairs=[
-      ["Best 1st-gear ratio", lowSens? fmt(r.best.gear1,2)+" (low confidence)" : fmt(r.best.gear1,2)],
-      ["Exits the corner in", "gear "+r.best.exitGear+(r.best.usedFirst?"":" — 1st unused at "+Math.round(r.v0)+" km/h")],
-      ["Ratio sensitivity", sens+" (±"+fmt(r.spread,2)+"s)"],
-      ["Assumed grip μ", fmt(r.mu,2)],
-      ["Final drive used", fmt(r.fd,2)]
+      ["Best 1st-gear (total) ratio", lowSens? fmt(r.best.ratio,2)+" (low confidence)" : fmt(r.best.ratio,2)],
+      ["Move your 1st-gear slider", (r.pctChange>=0?"+":"")+fmt(r.pctChange,0)+"%"+(r.cur1Est?" — 1st was estimated":"")],
+      ["Predicted 0–100", r.curTime!=null? "now "+fmt(r.curTime,2)+"s → best "+fmt(r.best.time,2)+"s" : "best "+fmt(r.best.time,2)+"s"],
+      ["Grip source", r.gripSrc]
     ];
-    if(r.current) pairs.push(["Your 1st ("+fmt(r.current.gear1,2)+")", deltaPct>0.3? fmt(deltaPct,1)+"% slower than best" : "already near-optimal"]);
-    box.appendChild(card("Fastest 1st gear out of a "+Math.round(r.v0)+" km/h corner", pairs,
-      "Simulated full-throttle pull over 120 m from corner-exit speed, using your imported curve. Traction (μ) and drag are estimates — trust the RANKING, not the absolute time; confirm the winner in-game with telemetry. "
-      +(lowSens?"Sensitivity is low: across the whole ratio range the exit time barely moves, so you're traction-limited here — 1st-gear ratio is NOT your lever; grip, diff and launch matter more. ":"")
-      +(r.best.usedFirst?"":"At this corner speed you're already past 1st gear, so 1st mainly matters for slower hairpins and standing launches — lower the corner-exit speed to tune for those.")));
+    if(r.measured0to100!=null) pairs.push(["FH6 measured 0–100", r.measured0to100+"s (peak slip "+(r.measuredSpin!=null?r.measuredSpin:"?")+")"]);
+    box.appendChild(card("Fastest 1st gear off the line (0–100 km/h)", pairs,
+      "Standing-start sim from your imported profile. "
+      +(measured? "Grip comes from your real measured launch, so the 0–100 should track FH6 closely. "
+                : "Grip is ESTIMATED (the capture showed no wheelspin) — re-capture a launch that lights up the tyres to measure it. ")
+      +(lowSens? "Sensitivity is low — 1st-gear ratio barely moves the 0–100 here, so it isn't your main lever. " : "")
+      +"Once you test it, tell me how the real launch behaves (bogs / spins / actual 0–100) and I'll calibrate the model to match FH6."));
   }
 
   function renderTips(i){
     var t=$("tips"); t.innerHTML="";
     var lines=[
       ["Final drive: ", "lower the ratio number for more top speed, raise it for acceleration. Set it on a known straight — you want to just hit redline in top gear at the end of the longest straight you race."],
-      ["Individual gears: ", "space them so revs drop back into the meat of the power band on each upshift; tighten the lower gears for punchy corner exits."],
+      ["Individual gears: ", "space them so revs drop back into the meat of the power band on each upshift; for the race start, tune 1st with the launch optimizer below."],
       ["Drivetrain ("+i.drivetrain+"): ", i.drivetrain==="RWD"?"watch power-on oversteer — soften the rear ARB or lower diff accel if it steps out." : i.drivetrain==="FWD"?"fight understeer with stiffer rear ARB and a touch more rear-soft balance." : "AWD is forgiving; shift diff balance rearward for a more playful car, forward for stability."],
       ["Workflow: ", "change ONE thing at a time and re-run the same corner — baselines get you 90% there, feel does the last 10%."]
     ];
     if(i.power!=null && i.weight!=null && i.power>0 && i.weight>0){
       var kwt=i.power/i.weight*1000;
       lines.unshift(["Power-to-weight ("+Math.round(kwt)+" kW/t): ",
-        kwt>=160?"very high — run slightly longer gears and wider rear tyres to keep traction off the line; don't over-shorten the final drive."
-        :kwt>=90?"moderate — the gear ladder above already widens the low gears to suit it."
-        :"modest — you can run a shorter final drive for more punch out of corners."]);
+        kwt>=160?"very high — expect heavy wheelspin off the line; a longer 1st gear (see optimizer) keeps it hooked up."
+        :kwt>=90?"moderate — the launch optimizer below will find the 1st gear that best balances spin vs bog."
+        :"modest — you can run a shorter 1st for more punch off the line."]);
     }
     lines.forEach(function(l){
       var p=document.createElement("div"); p.style.marginBottom="6px";
@@ -621,7 +544,7 @@
 
   // ---- last inputs (so the car's basics survive a reload / app relaunch) ----
   var LAST="forzatune_last_v1";
-  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax","power","torque","weight","displacement","gears","redline","peakTorqueRPM","gear1","gearTop","tyreDia","topSpeed","cornerExit","muOverride"];
+  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax"];
   function saveLast(){ try{ var o={}; FIELDS.forEach(function(id){ o[id]=$(id).value; }); localStorage.setItem(LAST,JSON.stringify(o)); }catch(e){ /* storage blocked — keep working in-memory */ } }
   function restoreLast(){ try{ var v=localStorage.getItem(LAST); if(!v) return; var o=JSON.parse(v); FIELDS.forEach(function(id){ if(id in o && o[id]!=null) $(id).value=o[id]; }); }catch(e){ /* ignore corrupt cache */ } }
 
@@ -654,9 +577,7 @@
       dampMin:i.dampMin, dampMax:i.dampMax, rideMin:i.rideMin, rideMax:i.rideMax,
       frontAeroMin:i.frontAeroMin, frontAeroMax:i.frontAeroMax, rearAeroMin:i.rearAeroMin, rearAeroMax:i.rearAeroMax,
       finalMin:i.finalMin, finalMax:i.finalMax,
-      power:i.power, torque:i.torque, weight:i.weight, displacement:i.displacement,
-      gears:i.gears, redline:i.redline, peakTorqueRPM:i.peakTorqueRPM, gear1:i.gear1, gearTop:i.gearTop, tyreDia:i.tyreDia, topSpeed:i.topSpeed,
-      cornerExit:i.cornerExit, muOverride:i.muOverride, curve:CURVE,
+      curve:CURVE,   // the imported car profile (engine + measured ratios/mass/grip) travels with the tune
       savedAt:new Date().toISOString()};
   }
   function applyTune(t){
@@ -669,8 +590,11 @@
     $("frontAeroMin").value=t.frontAeroMin!=null?t.frontAeroMin:""; $("frontAeroMax").value=t.frontAeroMax!=null?t.frontAeroMax:"";
     $("rearAeroMin").value=t.rearAeroMin!=null?t.rearAeroMin:""; $("rearAeroMax").value=t.rearAeroMax!=null?t.rearAeroMax:"";
     $("finalMin").value=t.finalMin!=null?t.finalMin:""; $("finalMax").value=t.finalMax!=null?t.finalMax:"";
-    ["power","torque","weight","displacement","gears","redline","peakTorqueRPM","gear1","gearTop","tyreDia","topSpeed","cornerExit","muOverride"].forEach(function(id){ $(id).value=t[id]!=null?t[id]:""; });
-    if(t.curve && validCurve(t.curve)) setCurve(normCurve(t.curve)); // saved tune carries its own captured curve
+    // saved tune carries its own profile: already-normalised objects have a .curve array; raw exports go through normCurve
+    if(t.curve && Array.isArray(t.curve.curve)) setCurve(t.curve);
+    else if(validCurve(t.curve)) setCurve(normCurve(t.curve));
+    else setCurve(null);
+    syncDrivetrainFromProfile();
     updateCurveStatus();
     compute();
   }
@@ -726,25 +650,31 @@
   }
 
   function resetFields(){
-    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax","power","torque","weight","displacement","gears","redline","peakTorqueRPM","gear1","gearTop","tyreDia","topSpeed","cornerExit","muOverride"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
+    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalMin","finalMax"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
     $("drivetrain").value="RWD"; $("intent").value="road";
     $("arbMin").value=1; $("arbMax").value=65; $("dampMin").value=1; $("dampMax").value=20;
-    compute();   // keeps the imported curve (it isn't a field) — use Clear curve to remove it
+    compute();   // keeps the imported profile (it isn't a field) — use Clear to remove it
   }
 
-  // ---- torque-curve import (from the FH6 capture-tool) ----
+  // ---- car-profile import (from the FH6 capture-tool) ----
+  function syncDrivetrainFromProfile(){
+    if(CURVE && CURVE.drivetrain && ["RWD","AWD","FWD"].indexOf(CURVE.drivetrain)>=0) $("drivetrain").value=CURVE.drivetrain;
+  }
   function updateCurveStatus(){
     var el=$("curveStatus"); if(!el) return;
-    if(CURVE){ el.textContent="✓ "+Math.round(CURVE.peakTorque.torque)+" Nm peak, redline "+Math.round(CURVE.maxRpm)+(CURVE.car&&CURVE.car.pi?", PI "+CURVE.car.pi:""); el.className="note good"; }
-    else { el.textContent="no curve loaded"; el.className="note"; }
+    if(CURVE){
+      el.textContent="✓ "+(CURVE.isProfile?"profile":"curve")+": "+Math.round(CURVE.peakTorque.torque)+" Nm peak, redline "+Math.round(CURVE.maxRpm)
+        +(CURVE.mass?", "+CURVE.mass+" kg":"")+(CURVE.car&&CURVE.car.pi?", PI "+CURVE.car.pi:"");
+      el.className="note good";
+    } else { el.textContent="no profile loaded"; el.className="note"; }
     var clr=$("curveClear"); if(clr) clr.style.display=CURVE?"inline-block":"none";
   }
   function importCurve(file){
     var r=new FileReader();
     r.onload=function(){ try{
       var c=JSON.parse(r.result);
-      if(!validCurve(c)) throw new Error("bad curve");
-      setCurve(normCurve(c)); updateCurveStatus(); compute();
+      if(!validCurve(c)) throw new Error("bad profile");
+      setCurve(normCurve(c)); syncDrivetrainFromProfile(); updateCurveStatus(); compute();
     }catch(e){ alert("Couldn't read that file — export it with the FH6 capture-tool (fh6-torque-capture.py)."); } };
     r.readAsText(file);
   }
@@ -763,6 +693,7 @@
 
   loadCurve();
   restoreLast();
+  syncDrivetrainFromProfile();
   updateCurveStatus();
   compute();
   renderSaved();
@@ -774,7 +705,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="20260608-192217";
+  var BUILD="20260608-195048";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
