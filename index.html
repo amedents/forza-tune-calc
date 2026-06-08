@@ -167,7 +167,7 @@
     </div>
   </div>
 
-  <h2>Suspension baseline</h2>
+  <h2>Tune baseline — in FH6 tab order</h2>
   <div class="results" id="results"></div>
   <div class="row" style="margin-top:10px"><button class="ghost sm" id="copyBtn">⧉ Copy tune</button></div>
 
@@ -320,7 +320,36 @@
     var fd=i.frontDist/100, rd=1-fd;
     var P=PRESETS[i.intent]||PRESETS.road;
 
-    // ---- Springs (requires per-car range) ----
+    // ---- power-to-weight (kW/kg) + torque-to-weight (Nm/kg): drive aero bias, gear spacing & final-drive length ----
+    var p2w=(i.power!==null && i.weight!==null && i.power>0 && i.weight>0)? i.power/i.weight : null;
+    var t2w=(i.torque!==null && i.weight!==null && i.torque>0 && i.weight>0)? i.torque/i.weight : null;
+
+    // Cards are appended in FH6's in-game tuning-tab order so the app reads top-to-bottom like the game:
+    // 1 Tires · 2 Gearing · 3 Alignment · 4 Antiroll Bars · 5 Springs · 6 Damping · 7 Aero · 8 Brakes · 9 Differential.
+    // (Ride height is part of the Springs tab in-game, so it sits directly under Springs here.)
+
+    // ---- 1. Tires → Tyre pressure ----
+    box.appendChild(card("Tyre pressure",[["Front",fmt(P.barF,1)+" bar"],["Rear",fmt(P.barR,1)+" bar"]],"Cold start values. Forza target is ~2.2–2.3 bar HOT — after a lap, drop pressure if a tyre is above that. (Set Forza's units to Metric to see bar.)"));
+
+    // ---- 2. Gearing (per-gear ratios) ----
+    var gl=gearLadder(i,P,p2w,t2w);
+    box.appendChild(card("Gearing",gl.pairs,gl.note));
+
+    // ---- 3. Alignment ----
+    box.appendChild(card("Alignment",[
+      ["Camber F",fmt(P.camberF,1)+"°"],["Camber R",fmt(P.camberR,1)+"°"],
+      ["Toe F",fmt(P.toeF,1)+"°"],["Toe R",fmt(P.toeR,1)+"°"],
+      ["Caster",fmt(P.caster,1)+"°"]
+    ],"Negative camber adds cornering grip but costs straight-line traction — trim toward 0 if tyres overheat on the inside edge."));
+
+    // ---- 4. Anti-roll bars ----
+    if(i.arbMin!==null && i.arbMax!==null && i.arbMax>i.arbMin){
+      var aF=(i.arbMax-i.arbMin)*fd+i.arbMin;
+      var aR=(i.arbMax-i.arbMin)*rd+i.arbMin;
+      box.appendChild(card("Anti-roll bars",[["Front",fmt(aF,2)],["Rear",fmt(aR,2)]],"Stiffen one end to cut grip there: more front = less understeer."));
+    }
+
+    // ---- 5. Springs (requires per-car range) ----
     if(i.springMin!==null && i.springMax!==null && i.springMax>i.springMin){
       var sF=((i.springMax-i.springMin)*fd+i.springMin)*P.springMult;
       var sR=((i.springMax-i.springMin)*rd+i.springMin)*P.springMult;
@@ -331,26 +360,7 @@
       box.appendChild(card("Springs",[["Front","—"],["Rear","—"]],"Enter the car's Spring-rate Min & Max (read them off the suspension tuning page) to get values."));
     }
 
-    // ---- ARB ----
-    if(i.arbMin!==null && i.arbMax!==null && i.arbMax>i.arbMin){
-      var aF=(i.arbMax-i.arbMin)*fd+i.arbMin;
-      var aR=(i.arbMax-i.arbMin)*rd+i.arbMin;
-      box.appendChild(card("Anti-roll bars",[["Front",fmt(aF,2)],["Rear",fmt(aR,2)]],"Stiffen one end to cut grip there: more front = less understeer."));
-    }
-
-    // ---- Damping ----
-    if(i.dampMin!==null && i.dampMax!==null && i.dampMax>i.dampMin){
-      var rebF=(i.dampMax-i.dampMin)*fd+i.dampMin;
-      var rebR=(i.dampMax-i.dampMin)*rd+i.dampMin;
-      var bumpF=clamp(rebF*0.65,i.dampMin,i.dampMax);
-      var bumpR=clamp(rebR*0.65,i.dampMin,i.dampMax);
-      box.appendChild(card("Damping",[
-        ["Rebound F",fmt(rebF,1)],["Rebound R",fmt(rebR,1)],
-        ["Bump F",fmt(bumpF,1)],["Bump R",fmt(bumpR,1)]
-      ],"Bump set to 65% of rebound. Raise bump for sharper response, lower it if the car skips over bumps."));
-    }
-
-    // ---- Ride height ----
+    // ---- 5b. Ride height (sits in the Springs tab in-game) ----
     var rhPairs, rhNote=null;
     if(i.rideMin!==null && i.rideMax!==null && i.rideMax>i.rideMin){
       var rh = P.ride==="min"? [i.rideMin,i.rideMin] : P.ride==="max"? [i.rideMax,i.rideMax] : [ (i.rideMin+i.rideMax)/2, (i.rideMin+i.rideMax)/2 ];
@@ -363,14 +373,43 @@
     if(P.ride==="max") rhNote=(rhNote?rhNote+" ":"")+"Raised for ground clearance off-road.";
     box.appendChild(card("Ride height",rhPairs,rhNote));
 
-    // ---- Alignment ----
-    box.appendChild(card("Alignment",[
-      ["Camber F",fmt(P.camberF,1)+"°"],["Camber R",fmt(P.camberR,1)+"°"],
-      ["Toe F",fmt(P.toeF,1)+"°"],["Toe R",fmt(P.toeR,1)+"°"],
-      ["Caster",fmt(P.caster,1)+"°"]
-    ],"Negative camber adds cornering grip but costs straight-line traction — trim toward 0 if tyres overheat on the inside edge."));
+    // ---- 6. Damping ----
+    if(i.dampMin!==null && i.dampMax!==null && i.dampMax>i.dampMin){
+      var rebF=(i.dampMax-i.dampMin)*fd+i.dampMin;
+      var rebR=(i.dampMax-i.dampMin)*rd+i.dampMin;
+      var bumpF=clamp(rebF*0.65,i.dampMin,i.dampMax);
+      var bumpR=clamp(rebR*0.65,i.dampMin,i.dampMax);
+      box.appendChild(card("Damping",[
+        ["Rebound F",fmt(rebF,1)],["Rebound R",fmt(rebR,1)],
+        ["Bump F",fmt(bumpF,1)],["Bump R",fmt(bumpR,1)]
+      ],"Bump set to 65% of rebound. Raise bump for sharper response, lower it if the car skips over bumps."));
+    }
 
-    // ---- Differential ----
+    // ---- 7. Aero (downforce, kgf) ----
+    var aFa=P.aeroF, aRa=P.aeroR, aeroNudged=false;
+    if(p2w!==null && (i.intent==="road"||i.intent==="drift")){
+      var am=clamp((p2w-0.12)*0.5,-0.10,0.12);
+      if(Math.abs(am)>=0.01){ aFa=clamp(aFa+am,0,1); aRa=clamp(aRa+am,0,1); aeroNudged=true; }
+    }
+    var aeroPairs, aeroNote;
+    var haveAF=i.frontAeroMin!==null && i.frontAeroMax!==null && i.frontAeroMax>i.frontAeroMin;
+    var haveAR=i.rearAeroMin!==null && i.rearAeroMax!==null && i.rearAeroMax>i.rearAeroMin;
+    if(haveAF||haveAR){
+      aeroPairs=[
+        ["Front", haveAF? fmt(i.frontAeroMin+aFa*(i.frontAeroMax-i.frontAeroMin),0)+" kgf" : "—"],
+        ["Rear",  haveAR? fmt(i.rearAeroMin+aRa*(i.rearAeroMax-i.rearAeroMin),0)+" kgf" : "—"]
+      ];
+      aeroNote="More downforce = more grip but more drag (lower top speed). "+(i.intent==="road"?"Near-max here, rear-biased for high-speed stability.":"Trimmed for "+i.intent+": less drag, more compliance.")+(aeroNudged?" Nudged up for this car's power-to-weight.":"");
+    } else {
+      aeroPairs=[["Front",aeroLevel(aFa)],["Rear",aeroLevel(aRa)]];
+      aeroNote="Target "+aeroLevel(aFa)+" front / "+aeroLevel(aRa)+" rear. Add the car's downforce Min/Max in Advanced for exact kgf. Downforce is a grip-vs-drag choice bounded by the car's slider range — many cars can't fit a wing at all.";
+    }
+    box.appendChild(card("Aero (downforce)",aeroPairs,aeroNote));
+
+    // ---- 8. Brakes ----
+    box.appendChild(card("Brakes",[["Balance",P.brakeBal+"% front"],["Pressure","100%"]],"Shift balance rearward a few % if the front locks and washes wide into corners."));
+
+    // ---- 9. Differential ----
     var diffPairs;
     if(i.drivetrain==="AWD"){
       diffPairs=[["Front accel",Math.round(P.accel*0.6)+"%"],["Front decel",Math.round(P.decel*0.6)+"%"],
@@ -381,41 +420,6 @@
       diffPairs=[["Accel",P.accel+"%"],["Decel",P.decel+"%"]];
     }
     box.appendChild(card("Differential",diffPairs,"Higher accel locks the driven axle under power (more stability, more push); lower frees rotation."));
-
-    // ---- Brakes ----
-    box.appendChild(card("Brakes",[["Balance",P.brakeBal+"% front"],["Pressure","100%"]],"Shift balance rearward a few % if the front locks and washes wide into corners."));
-
-    // ---- power-to-weight (kW/kg) + torque-to-weight (Nm/kg): drive aero bias, gear spacing & final-drive length ----
-    var p2w=(i.power!==null && i.weight!==null && i.power>0 && i.weight>0)? i.power/i.weight : null;
-    var t2w=(i.torque!==null && i.weight!==null && i.torque>0 && i.weight>0)? i.torque/i.weight : null;
-
-    // ---- Aero (downforce, kgf) ----
-    var aF=P.aeroF, aR=P.aeroR, aeroNudged=false;
-    if(p2w!==null && (i.intent==="road"||i.intent==="drift")){
-      var am=clamp((p2w-0.12)*0.5,-0.10,0.12);
-      if(Math.abs(am)>=0.01){ aF=clamp(aF+am,0,1); aR=clamp(aR+am,0,1); aeroNudged=true; }
-    }
-    var aeroPairs, aeroNote;
-    var haveAF=i.frontAeroMin!==null && i.frontAeroMax!==null && i.frontAeroMax>i.frontAeroMin;
-    var haveAR=i.rearAeroMin!==null && i.rearAeroMax!==null && i.rearAeroMax>i.rearAeroMin;
-    if(haveAF||haveAR){
-      aeroPairs=[
-        ["Front", haveAF? fmt(i.frontAeroMin+aF*(i.frontAeroMax-i.frontAeroMin),0)+" kgf" : "—"],
-        ["Rear",  haveAR? fmt(i.rearAeroMin+aR*(i.rearAeroMax-i.rearAeroMin),0)+" kgf" : "—"]
-      ];
-      aeroNote="More downforce = more grip but more drag (lower top speed). "+(i.intent==="road"?"Near-max here, rear-biased for high-speed stability.":"Trimmed for "+i.intent+": less drag, more compliance.")+(aeroNudged?" Nudged up for this car's power-to-weight.":"");
-    } else {
-      aeroPairs=[["Front",aeroLevel(aF)],["Rear",aeroLevel(aR)]];
-      aeroNote="Target "+aeroLevel(aF)+" front / "+aeroLevel(aR)+" rear. Add the car's downforce Min/Max in Advanced for exact kgf. Downforce is a grip-vs-drag choice bounded by the car's slider range — many cars can't fit a wing at all.";
-    }
-    box.appendChild(card("Aero (downforce)",aeroPairs,aeroNote));
-
-    // ---- Gearing (per-gear ratios) ----
-    var gl=gearLadder(i,P,p2w,t2w);
-    box.appendChild(card("Gearing",gl.pairs,gl.note));
-
-    // ---- Tyre pressure ----
-    box.appendChild(card("Tyre pressure",[["Front",fmt(P.barF,1)+" bar"],["Rear",fmt(P.barR,1)+" bar"]],"Cold start values. Forza target is ~2.2–2.3 bar HOT — after a lap, drop pressure if a tyre is above that. (Set Forza's units to Metric to see bar.)"));
 
     renderTips(i);
   }
@@ -577,7 +581,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="20260608-002256";
+  var BUILD="20260608-182442";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
