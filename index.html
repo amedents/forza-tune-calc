@@ -279,6 +279,40 @@
       return a.torque+(b.torque-a.torque)*(rpm-a.rpm)/(b.rpm-a.rpm); } }
     return pts[pts.length-1].torque;
   }
+  // Wheel-force-matched optimal UPSHIFT rpm per gear (except top). Pure FH6 physics:
+  // uses the real torque curve + real TOTAL ratios — eff & tyre radius cancel out, so this
+  // is exact regardless of drivetrain loss. Upshift where the NEXT gear's wheel force first
+  // overtakes the current gear's; that crossover is the fastest place to change up.
+  // ratios = ordered total ratios [g1,g2,...]; returns array aligned to ratios (top = redline).
+  function optimalShiftRpms(pts,ratios,maxRpm){
+    var idle=pts[0].rpm, out=[];
+    for(var g=0; g<ratios.length; g++){
+      if(g===ratios.length-1){ out.push(maxRpm); continue; }     // top gear pulls to redline
+      var rCur=ratios[g], rNext=ratios[g+1];
+      if(!(rNext<rCur)){ out.push(maxRpm); continue; }            // non-decreasing (noise) -> redline
+      var k=rNext/rCur, sp=maxRpm;
+      for(var r=idle; r<=maxRpm; r+=25){
+        var Fcur=torqueAt(pts,r)*rCur;
+        var Fnext=torqueAt(pts,clamp(r*k,idle,maxRpm))*rNext;
+        if(Fnext>=Fcur){ sp=r; break; }                          // first crossover from below
+      }
+      out.push(sp);
+    }
+    return out;
+  }
+  // Optimal standing-launch engine rpm: where 1st-gear wheel force meets the measured grip
+  // ceiling. Below it you leave thrust on the table; above it the tyres light up.
+  function launchRpm(pts,ratio1,eff,rW,gripF,maxRpm){
+    var idle=pts[0].rpm;
+    function F(r){ return torqueAt(pts,clamp(r,idle,maxRpm))*ratio1*eff/rW; }
+    var fPeak=0,rPeak=idle;
+    for(var r=idle;r<=maxRpm;r+=25){ var f=F(r); if(f>fPeak){fPeak=f;rPeak=r;} }
+    if(fPeak<=gripF) return {rpm:rPeak, mode:"grip-rich"};        // can't spin -> max-force rpm
+    if(F(idle)>=gripF) return {rpm:idle, mode:"spins-at-idle"};   // spins from idle -> feather
+    var best=idle;                                                // sit right on the traction limit
+    for(var r2=idle;r2<=rPeak;r2+=25){ if(F(r2)<=gripF) best=r2; }
+    return {rpm:best, mode:"grip-limited"};
+  }
   // driven-axle grip share when grip must be ESTIMATED (no measured launch): static + transfer
   function tractionShare(drivetrain,frontFrac){
     var rear=1-frontFrac;
@@ -291,11 +325,12 @@
   // standing-start launch. ratios are TOTAL (gear x final). Returns time to reach targetV.
   function simLaunch(ratios,o){
     var pts=o.curve, dt=0.01, v=0.5, t=0, rho=1.225, g=9.81, rW=o.tyreRadius, eff=o.eff, tcap=14, spun=false;
+    var shifts=optimalShiftRpms(pts,ratios,o.redline);   // upshift at the force-matched crossover, not redline
     function rpmAt(v,r){ return v/(2*Math.PI*rW)*60*r; }
     var gear=0;
     while(v<o.targetV && t<tcap){
       var rpm=rpmAt(v,ratios[gear]);
-      if(rpm>=o.redline && gear<ratios.length-1){ gear++; rpm=rpmAt(v,ratios[gear]); }
+      if(rpm>=shifts[gear] && gear<ratios.length-1){ gear++; rpm=rpmAt(v,ratios[gear]); }
       var Te=torqueAt(pts, clamp(rpm,pts[0].rpm,o.redline));
       var Fengine=Te*ratios[gear]*eff/rW;
       var Fmax=o.gripF;                       // measured (or estimated) grip ceiling
@@ -342,23 +377,43 @@
     var best=cands[0], tmin=cands[0].time, tmax=cands[0].time;
     cands.forEach(function(c){ if(c.time<best.time) best=c; if(c.time<tmin)tmin=c.time; if(c.time>tmax)tmax=c.time; });
     var curSim=simLaunch([cur1].concat(rest),o);
+    var lr=launchRpm(CURVE.curve, cur1, o.eff, rW, gripF, CURVE.maxRpm);
     return {state:"ok", best:best, cur1:cur1, cur1Est:cur1Est, curTime:curSim.reached?curSim.time:null,
             spread:tmax-tmin, pctChange:(best.ratio/cur1-1)*100, gripSrc:gripSrc,
-            measured0to100:m0to100, measuredSpin:mSpin};
+            measured0to100:m0to100, measuredSpin:mSpin, launch:lr};
   }
   // Gearing card: real captured gears when a profile is loaded, else a hint
   function gearingCard(i){
     if(CURVE && CURVE.isProfile && CURVE.gearRatios && Object.keys(CURVE.gearRatios).length){
-      var gr=CURVE.gearRatios, rW=CURVE.tyreRadius, redline=CURVE.maxRpm;
-      var keys=Object.keys(gr).map(Number).sort(function(a,b){return a-b;});
-      var pairs=keys.map(function(k){
-        var tot=gr[String(k)], val=fmt(tot,2)+" total";
-        if(rW && redline){ val+="  ·  "+Math.round(redline*2*Math.PI*rW/(60*tot)*3.6)+" km/h"; }
+      var gr=CURVE.gearRatios, rW=CURVE.tyreRadius, redline=CURVE.maxRpm, pts=CURVE.curve;
+      var keys=Object.keys(gr).map(Number).filter(function(n){return n>=1;}).sort(function(a,b){return a-b;});
+      var ratios=keys.map(function(k){ return gr[String(k)]; });
+      var shifts=(pts && pts.length>=2)? optimalShiftRpms(pts,ratios,redline) : null;
+      function kmhAt(rpm,tot){ return rW? Math.round(rpm*2*Math.PI*rW/(60*tot)*3.6) : null; }
+      var pairs=keys.map(function(k,idx){
+        var tot=ratios[idx], val=fmt(tot,2);
+        if(shifts && idx<keys.length-1){
+          var sr=shifts[idx], kmh=kmhAt(sr,tot);
+          val+=" · shift "+Math.round(sr)+" rpm"+(kmh!=null?" @ "+kmh+" km/h":"");
+        } else {
+          var top=kmhAt(redline,tot);
+          if(top!=null) val+=" · top "+top+" km/h";
+        }
         return ["Gear "+k, val];
       });
-      return {pairs:pairs, note:"Your car's REAL ratios, measured from telemetry (total = gear × final drive); speeds are at redline ("+Math.round(redline)+" rpm). To change 1st, use the launch optimizer below."};
+      // gear-spacing flag: if an upshift drops engine well below the torque peak, that next gear is too tall
+      var ptRpm=(CURVE.peakTorque&&CURVE.peakTorque.rpm)||0, sag=null;
+      if(shifts && ptRpm){
+        for(var g=0; g<keys.length-1; g++){
+          var drop=shifts[g]*ratios[g+1]/ratios[g];
+          if(drop < ptRpm*0.82){ sag="Gear "+keys[g+1]+" lands at ~"+Math.round(drop)+" rpm after the upshift — below the torque peak ("+Math.round(ptRpm)+"), so it's a touch tall; shortening it keeps revs in the band."; break; }
+        }
+      }
+      var note="Real ratios measured from telemetry (total = gear × final drive). Shift points are force-matched to your actual torque curve — change up there for the fastest run; top gear pulls to redline ("+Math.round(redline)+" rpm). To change 1st, use the launch optimizer below.";
+      if(sag) note+=" "+sag;
+      return {pairs:pairs, note:note};
     }
-    return {pairs:[["Gears","—"]], note:"Import a car profile (Car profile section) captured with the capture-tool to see your real gear ratios and run the launch optimizer."};
+    return {pairs:[["Gears","—"]], note:"Import a car profile (Car profile section) captured with the capture-tool to see your real gear ratios, force-matched shift points and the launch optimizer."};
   }
 
   function compute(){
@@ -506,9 +561,13 @@
       ["Predicted 0–100", r.curTime!=null? "now "+fmt(r.curTime,2)+"s → best "+fmt(r.best.time,2)+"s" : "best "+fmt(r.best.time,2)+"s"],
       ["Grip source", r.gripSrc]
     ];
+    if(r.launch){
+      var modeTxt={"grip-rich":"grippy — drop it here, won't spin","spins-at-idle":"power-rich — even idle spins, ease the throttle on","grip-limited":"sits right on the traction limit"}[r.launch.mode]||"";
+      pairs.push(["Hold launch revs at", Math.round(r.launch.rpm)+" rpm"+(modeTxt?" ("+modeTxt+")":"")]);
+    }
     if(r.measured0to100!=null) pairs.push(["FH6 measured 0–100", r.measured0to100+"s (peak slip "+(r.measuredSpin!=null?r.measuredSpin:"?")+")"]);
     box.appendChild(card("Fastest 1st gear off the line (0–100 km/h)", pairs,
-      "Standing-start sim from your imported profile. "
+      "Standing-start sim from your imported profile. Launch revs = where 1st-gear wheel force meets your measured grip. "
       +(measured? "Grip comes from your real measured launch, so the 0–100 should track FH6 closely. "
                 : "Grip is ESTIMATED (the capture showed no wheelspin) — re-capture a launch that lights up the tyres to measure it. ")
       +(lowSens? "Sensitivity is low — 1st-gear ratio barely moves the 0–100 here, so it isn't your main lever. " : "")
@@ -705,7 +764,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="20260608-195048";
+  var BUILD="ftc-20260609-110841";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
