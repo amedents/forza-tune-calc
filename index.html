@@ -237,11 +237,17 @@
   // the sim. Older "torque-curve" exports (curve only) still import, but the gearing &
   // launch features stay locked until a full profile is supplied.
   function setCurve(c){ CURVE=c; try{ if(c) localStorage.setItem(CURVEKEY,JSON.stringify(c)); else localStorage.removeItem(CURVEKEY); }catch(e){} }
-  function loadCurve(){ try{ var v=localStorage.getItem(CURVEKEY); CURVE=v?JSON.parse(v):null; }catch(e){ CURVE=null; } }
+  function loadCurve(){ try{ var v=localStorage.getItem(CURVEKEY), c=v?JSON.parse(v):null;
+    // heal stale pre-fix saves: a raw (un-normalised) object in storage would crash every consumer
+    if(c && typeof c.isProfile!=="boolean") c=validCurve(c)? normCurve(c) : null;
+    CURVE=c; }catch(e){ CURVE=null; } }
+  // usable = what normCurve will actually keep; validating on length alone let all-zero-torque
+  // curves through and normCurve then crashed on an empty array
+  function usablePts(arr){ var n=0; arr.forEach(function(p){ if(p && isFinite(p.rpm) && isFinite(p.torque) && p.torque>0) n++; }); return n; }
   function validCurve(c){
     if(!c) return false;
-    if(c.type==="car-profile") return c.engine && Array.isArray(c.engine.curve) && c.engine.curve.length>=3;
-    if(Array.isArray(c.curve)) return c.curve.length>=3 && c.curve.every(function(p){ return p && isFinite(p.rpm) && isFinite(p.torque); });
+    if(c.type==="car-profile") return !!(c.engine && Array.isArray(c.engine.curve) && usablePts(c.engine.curve)>=3);
+    if(Array.isArray(c.curve)) return usablePts(c.curve)>=3;
     return false;
   }
   function normCurve(c){
@@ -319,11 +325,15 @@
   function simLaunch(ratios,o){
     var pts=o.curve, dt=0.01, v=0.5, t=0, rho=1.225, g=9.81, rW=o.tyreRadius, eff=o.eff, tcap=14, spun=false;
     var shifts=optimalShiftRpms(pts,ratios,o.redline);   // upshift at the force-matched crossover, not redline
+    // clutch-slip launch: FH6 holds your launch revs until road speed catches up — without this
+    // the sim bogs every start from idle and over-predicts the 0-100 (contradicting our own advice)
+    var hold=launchRpm(pts,ratios[0],eff,rW,o.gripF,o.redline).rpm;
     function rpmAt(v,r){ return v/(2*Math.PI*rW)*60*r; }
     var gear=0;
     while(v<o.targetV && t<tcap){
       var rpm=rpmAt(v,ratios[gear]);
       if(rpm>=shifts[gear] && gear<ratios.length-1){ gear++; rpm=rpmAt(v,ratios[gear]); }
+      if(gear===0 && rpm<hold) rpm=hold;               // slipping clutch keeps the engine at launch revs
       var Te=torqueAt(pts, clamp(rpm,pts[0].rpm,o.redline));
       var Fengine=Te*ratios[gear]*eff/rW;
       var Fmax=o.gripF;                       // measured (or estimated) grip ceiling
@@ -426,13 +436,9 @@
     var P=PRESETS[i.intent]||PRESETS.road;
 
     // a loaded car profile supplies the engine numbers (no manual typing) for the aero nudge below
-    if(CURVE){
-      i.redline=CURVE.maxRpm; i.peakTorqueRPM=Math.round(CURVE.peakTorque.rpm);
-      if(CURVE.isProfile){ i.weight=CURVE.mass; i.power=CURVE.peakPower.power/1000; i.torque=CURVE.peakTorque.torque; }
-    }
-    // ---- power-to-weight (kW/kg) + torque-to-weight (Nm/kg): drive the aero bias nudge ----
+    if(CURVE && CURVE.isProfile){ i.weight=CURVE.mass; i.power=CURVE.peakPower.power/1000; }
+    // ---- power-to-weight (kW/kg): drives the aero bias nudge + the tips line ----
     var p2w=(i.power!=null && i.weight!=null && i.power>0 && i.weight>0)? i.power/i.weight : null;
-    var t2w=(i.torque!=null && i.weight!=null && i.torque>0 && i.weight>0)? i.torque/i.weight : null;
 
     // Cards are appended in FH6's in-game tuning-tab order so the app reads top-to-bottom like the game:
     // 1 Tires · 2 Gearing · 3 Alignment · 4 Antiroll Bars · 5 Springs · 6 Damping · 7 Aero · 8 Brakes · 9 Differential.
@@ -700,7 +706,11 @@
       if(!p||p.app!=="forza-tune-calc"||!Array.isArray(p.tunes)) throw new Error("bad file");
       var cur=load(); var byName={}; cur.forEach(function(t){ byName[t.name.toLowerCase()]=true; });
       var added=0;
-      p.tunes.forEach(function(t){ if(t&&typeof t.name==="string"){ if(byName[t.name.toLowerCase()]){ t.name=t.name+" (imported)"; } cur.unshift(t); added++; } });
+      p.tunes.forEach(function(t){ if(t&&typeof t.name==="string"){
+        var nm=t.name;
+        while(byName[nm.toLowerCase()]){ nm=nm+" (imported)"; }   // keep suffixing until unique
+        t.name=nm; byName[nm.toLowerCase()]=true;
+        cur.unshift(t); added++; } });
       save(cur); renderSaved();
       alert("Imported "+added+" tune"+(added===1?"":"s")+".");
     }catch(e){ alert("Couldn't read that file — is it a Forza Tune export made here?"); } };
@@ -763,7 +773,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="ftc-20260609-114458";
+  var BUILD="ftc-20260609-194635";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
