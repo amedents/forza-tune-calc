@@ -144,7 +144,17 @@
         </div>
         <input type="file" id="curveFile" accept="application/json,.json" style="display:none" />
       </div>
-      <div class="note">No more typing engine specs. Run <code>capture-tool/fh6-torque-capture.py</code>, then in FH6 do <b>one full-throttle pull from a standstill up through the gears</b>. It measures the real torque curve, gear ratios, tyre size, weight, grip and your actual 0–100 — import the JSON here and the <b>Gearing</b> card + <b>launch optimizer</b> fill themselves. (Front weight % and the spring/ARB/damping/aero ranges below can't be read from telemetry, so they stay manual.)</div>
+      <div class="grid2" style="margin-top:6px">
+        <div class="field">
+          <label for="finalDrive">In-game final drive (read it off the gearbox tuning page)</label>
+          <input id="finalDrive" type="number" min="0.5" max="10" step="0.01" placeholder="e.g. 3.16" />
+        </div>
+        <div class="field">
+          <label for="massOverride">Mass override, kg (only if capture couldn't measure it)</label>
+          <input id="massOverride" type="number" min="300" max="5000" step="1" placeholder="from the car's stats card" />
+        </div>
+      </div>
+      <div class="note">No more typing engine specs. Run <code>capture-tool/fh6-torque-capture.py</code>, then in FH6 do <b>one full-throttle pull from a standstill up through the gears</b>. It measures the real torque curve, gear ratios, tyre size, weight, grip and your actual 0–100 — import the JSON here and the <b>Gearing</b> card + <b>launch optimizer</b> fill themselves. <b class="warnc">Telemetry measures TOTAL ratios (gear × final drive) — enter your final drive above and the cards show the exact per-gear slider values to type into the game.</b> (Front weight % and the spring/ARB/damping/aero ranges below can't be read from telemetry, so they stay manual.)</div>
     </details>
     <div class="row" style="margin-top:12px">
       <button id="saveBtn">★ Save tune</button>
@@ -212,7 +222,8 @@
       dampMin:num("dampMin"), dampMax:num("dampMax"),
       rideMin:num("rideMin"), rideMax:num("rideMax"),
       frontAeroMin:num("frontAeroMin"), frontAeroMax:num("frontAeroMax"),
-      rearAeroMin:num("rearAeroMin"), rearAeroMax:num("rearAeroMax")
+      rearAeroMin:num("rearAeroMin"), rearAeroMax:num("rearAeroMax"),
+      finalDrive:num("finalDrive"), massOverride:num("massOverride")
     };
   }
 
@@ -264,9 +275,12 @@
       peakTorque: (e.peakTorque&&isFinite(e.peakTorque.rpm))? {rpm:+e.peakTorque.rpm,torque:+e.peakTorque.torque} : {rpm:pt.rpm,torque:pt.torque},
       peakPower:  (e.peakPower&&isFinite(e.peakPower.rpm))? {rpm:+e.peakPower.rpm,power:+e.peakPower.power} : {rpm:pp.rpm,power:pp.power},
       mass: prof&&isFinite(c.mass)? +c.mass : null,
+      massSource: prof? (c.massSource||(isFinite(c.mass)?"measured":null)) : null,
       tyreRadius: prof&&isFinite(c.tyreRadius)? +c.tyreRadius : null,
       gearRatios: prof&&c.gearRatios? c.gearRatios : {},
+      gearQuality: prof&&c.gearQuality? c.gearQuality : {},
       drag: prof&&c.drag? c.drag : {cdA:0.72,crr:0.013},
+      atTopSpeed: prof&&c.atTopSpeed&&isFinite(c.atTopSpeed.kmh)? c.atTopSpeed : null,
       measuredLaunch: prof&&c.measuredLaunch? c.measuredLaunch : null,
       drivetrain: (c.car&&c.car.drivetrain)||null
     };
@@ -312,6 +326,29 @@
     for(var r2=idle;r2<=rPeak;r2+=25){ if(F(r2)<=gripF) best=r2; }
     return {rpm:best, mode:"grip-limited"};
   }
+  // mass for physics: measured by the capture when possible, else the user-entered override
+  function effMass(){ return (CURVE&&CURVE.mass)||num("massOverride")||null; }
+  function driveEff(i){ return ((CURVE&&CURVE.drivetrain)||i.drivetrain)==="AWD"?0.85:0.90; }
+  // drag area: calibrated from the capture's own observed top speed when available
+  // (at vmax, engine power exactly balances drag + rolling resistance), else the default
+  function effCdA(i){
+    var d=(CURVE&&CURVE.drag)||{}, m=effMass();
+    var at=CURVE&&CURVE.atTopSpeed;
+    if(at && at.kmh>120 && at.powerW && m){
+      var v=at.kmh/3.6;
+      var cdA=(at.powerW*driveEff(i) - (d.crr||0.013)*m*9.81*v)/(0.5*1.225*v*v*v);
+      if(isFinite(cdA)) return clamp(cdA,0.2,1.6);
+    }
+    return d.cdA||0.72;
+  }
+  // drag-limited top speed (m/s): solve P*eff = 0.5*rho*cdA*v^3 + crr*m*g*v by bisection
+  function dragVmax(powerW,eff,cdA,crr,m){
+    function need(v){ return 0.5*1.225*cdA*v*v*v + crr*m*9.81*v; }
+    var Pw=powerW*eff, lo=10, hi=250;
+    if(need(hi)<Pw) return hi;
+    for(var k=0;k<50;k++){ var mid=(lo+hi)/2; if(need(mid)<Pw) lo=mid; else hi=mid; }
+    return (lo+hi)/2;
+  }
   // driven-axle grip share when grip must be ESTIMATED (no measured launch): static + transfer
   function tractionShare(drivetrain,frontFrac){
     var rear=1-frontFrac;
@@ -350,7 +387,8 @@
   function optimizeLaunch(i){
     if(!CURVE) return {state:"nocurve"};
     if(!CURVE.isProfile) return {state:"curveonly"};
-    if(!CURVE.mass||!CURVE.tyreRadius) return {state:"incomplete"};
+    var mass=effMass();
+    if(!mass||!CURVE.tyreRadius) return {state:"incomplete"};
     var gr=CURVE.gearRatios||{};
     var keys=Object.keys(gr).map(Number).filter(function(n){return n>=1;}).sort(function(a,b){return a-b;});
     if(!keys.length) return {state:"nogears"};
@@ -358,7 +396,7 @@
     if(cur1===null) return {state:"nogears"};
     var cur1Est = gr["1"]==null;
     var rest=[]; keys.forEach(function(k){ if(k>=2) rest.push(gr[String(k)]); });
-    var mass=CURVE.mass, rW=CURVE.tyreRadius;
+    var rW=CURVE.tyreRadius;
     // grip ceiling: prefer the MEASURED launch (only if the tyre actually broke traction), else estimate
     var L=CURVE.measuredLaunch, gripF, gripSrc, m0to100=L?L.zeroTo100Kmh:null, mSpin=L?L.peakWheelSlip:null;
     if(L && L.peakWheelSlip!=null && L.peakWheelSlip>=0.06 && L.peakAccelMs2>0){
@@ -369,8 +407,8 @@
       gripSrc="estimated (no wheelspin in capture)";
     }
     var o={curve:CURVE.curve, targetV:27.78, mass:mass, gripF:gripF, tyreRadius:rW,
-           eff:((CURVE.drivetrain||i.drivetrain)==="AWD"?0.85:0.90),
-           cdA:(CURVE.drag&&CURVE.drag.cdA)||0.72, crr:(CURVE.drag&&CURVE.drag.crr)||0.013, redline:CURVE.maxRpm};
+           eff:driveEff(i),
+           cdA:effCdA(i), crr:(CURVE.drag&&CURVE.drag.crr)||0.013, redline:CURVE.maxRpm};
     var lo=cur1*0.70, hi=cur1*1.45, steps=18, cands=[];
     for(var m=0;m<=steps;m++){
       var g1=lo+(hi-lo)*m/steps;
@@ -392,15 +430,25 @@
       var keys=Object.keys(gr).map(Number).filter(function(n){return n>=1;}).sort(function(a,b){return a-b;});
       var ratios=keys.map(function(k){ return gr[String(k)]; });
       var shifts=(pts && pts.length>=2)? optimalShiftRpms(pts,ratios,redline) : null;
+      var fd=num("finalDrive");
       function kmhAt(rpm,tot){ return rW? Math.round(rpm*2*Math.PI*rW/(60*tot)*3.6) : null; }
+      // honest top speed: redline in top gear, CAPPED by what drag allows for this power
+      var vDragKmh=null, m=effMass();
+      if(CURVE.peakPower && CURVE.peakPower.power>0 && m)
+        vDragKmh=Math.round(dragVmax(CURVE.peakPower.power,driveEff(i),effCdA(i),(CURVE.drag&&CURVE.drag.crr)||0.013,m)*3.6);
       var pairs=keys.map(function(k,idx){
-        var tot=ratios[idx], val=fmt(tot,2);
+        var tot=ratios[idx];
+        // the in-game slider takes GEAR ratio, not total - show the slider number first
+        var val=(fd&&fd>0)? fmt(tot/fd,2)+" (slider)" : fmt(tot,2)+" total";
         if(shifts && idx<keys.length-1){
           var sr=shifts[idx], kmh=kmhAt(sr,tot);
           val+=" · shift "+Math.round(sr)+" rpm"+(kmh!=null?" @ "+kmh+" km/h":"");
         } else {
           var top=kmhAt(redline,tot);
-          if(top!=null) val+=" · top "+top+" km/h";
+          if(top!=null){
+            if(vDragKmh!=null && vDragKmh<top) val+=" · top ~"+vDragKmh+" km/h (drag-limited)";
+            else val+=" · top "+top+" km/h (redline)";
+          }
         }
         return ["Gear "+k, val];
       });
@@ -412,8 +460,17 @@
           if(drop < ptRpm*0.82){ sag="Gear "+keys[g+1]+" lands at ~"+Math.round(drop)+" rpm after the upshift — below the torque peak ("+Math.round(ptRpm)+"), so it's a touch tall; shortening it keeps revs in the band."; break; }
         }
       }
-      var note="Real ratios measured from telemetry (total = gear × final drive). Shift points are force-matched to your actual torque curve — change up there for the fastest run; top gear pulls to redline ("+Math.round(redline)+" rpm). To change 1st, use the launch optimizer below.";
+      var note;
+      if(fd&&fd>0){
+        note="Slider values = measured total ratio ÷ your final drive ("+fmt(fd,2)+") — type them straight into the game's per-gear sliders. Shift points are force-matched to your torque curve; top gear pulls to redline ("+Math.round(redline)+" rpm).";
+      } else {
+        note="⚠ These are TOTAL ratios (gear × final drive) — do NOT type them into the game's per-gear sliders. Enter your in-game final drive (Car profile section) and this card converts to exact slider values.";
+      }
+      // coverage warning: gears the capture never measured
+      var missing=[]; for(var n=1;n<=keys[keys.length-1];n++){ if(keys.indexOf(n)<0) missing.push(n); }
+      if(missing.length) note+=" ⚠ Gear"+(missing.length>1?"s":"")+" "+missing.join(", ")+" not measured in the capture — hold "+(missing.length>1?"them":"it")+" a moment longer on the next pull.";
       if(sag) note+=" "+sag;
+      note+=" To change 1st, use the launch optimizer below.";
       return {pairs:pairs, note:note};
     }
     return {pairs:[["Gears","—"]], note:"Import a car profile (Car profile section) captured with the capture-tool to see your real gear ratios, force-matched shift points and the launch optimizer."};
@@ -436,7 +493,7 @@
     var P=PRESETS[i.intent]||PRESETS.road;
 
     // a loaded car profile supplies the engine numbers (no manual typing) for the aero nudge below
-    if(CURVE && CURVE.isProfile){ i.weight=CURVE.mass; i.power=CURVE.peakPower.power/1000; }
+    if(CURVE && CURVE.isProfile){ i.weight=effMass(); i.power=CURVE.peakPower.power/1000; }
     // ---- power-to-weight (kW/kg): drives the aero bias nudge + the tips line ----
     var p2w=(i.power!=null && i.weight!=null && i.power>0 && i.weight>0)? i.power/i.weight : null;
 
@@ -547,21 +604,27 @@
     function note(txt){ var d=document.createElement("div"); d.className="note"; d.textContent=txt; box.appendChild(d); }
     if(!CURVE){ note("Import a car profile (Car profile section) to simulate the race start and get the fastest 1st-gear ratio. Capture it from FH6 with the capture-tool — one full-throttle launch grabs everything (curve, ratios, tyre size, mass, grip)."); return; }
     var sum=document.createElement("div"); sum.className="note";
+    var mEff=effMass();
     sum.textContent="Profile: peak "+Math.round(CURVE.peakTorque.torque)+" Nm @ "+Math.round(CURVE.peakTorque.rpm)+" rpm, redline "
-      +Math.round(CURVE.maxRpm)+(CURVE.mass?", "+CURVE.mass+" kg":"")+(CURVE.tyreRadius?", tyre r "+CURVE.tyreRadius+" m":"")
+      +Math.round(CURVE.maxRpm)
+      +(mEff?", "+mEff+" kg"+(CURVE.mass?(CURVE.massSource==="manual"?" (entered at capture)":""):" (override)"):"")
+      +(CURVE.tyreRadius?", tyre r "+CURVE.tyreRadius+" m":"")
+      +(CURVE.atTopSpeed?", saw "+Math.round(CURVE.atTopSpeed.kmh)+" km/h":"")
       +(CURVE.car&&CURVE.car.pi?" · PI "+CURVE.car.pi:"")+".";
     box.appendChild(sum);
     var r=optimizeLaunch(i);
     if(r.state!=="ok"){
       var hints={curveonly:"This is an old torque-curve-only export. Re-capture a full car profile (adds mass, gear ratios, tyre size) with the latest capture-tool.",
-        incomplete:"The profile is missing measured mass or tyre radius — do a clean full-throttle pull on a flat straight so the tool can measure them.",
+        incomplete:"Mass or tyre radius is missing. Enter a Mass override in the Car profile section (read the weight off the car's in-game stats card) — or re-capture with --mass <kg>.",
         nogears:"No gear ratios were measured — during capture, drive up through all the gears at full throttle."};
       note(hints[r.state]||"Import a complete car profile to run the launch optimizer.");
       return;
     }
     var lowSens=r.spread<0.05, measured=r.gripSrc.indexOf("measured")===0;
+    var fd=num("finalDrive");
+    var bestTxt=(fd&&fd>0)? fmt(r.best.ratio/fd,2)+" slider ("+fmt(r.best.ratio,2)+" total)" : fmt(r.best.ratio,2)+" total — enter final drive for the slider value";
     var pairs=[
-      ["Best 1st-gear (total) ratio", lowSens? fmt(r.best.ratio,2)+" (low confidence)" : fmt(r.best.ratio,2)],
+      ["Best 1st gear", lowSens? bestTxt+" (low confidence)" : bestTxt],
       ["Move your 1st-gear slider", (r.pctChange>=0?"+":"")+fmt(r.pctChange,0)+"%"+(r.cur1Est?" — 1st was estimated":"")],
       ["Predicted 0–100", r.curTime!=null? "now "+fmt(r.curTime,2)+"s → best "+fmt(r.best.time,2)+"s" : "best "+fmt(r.best.time,2)+"s"],
       ["Grip source", r.gripSrc]
@@ -608,7 +671,7 @@
 
   // ---- last inputs (so the car's basics survive a reload / app relaunch) ----
   var LAST="forzatune_last_v1";
-  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax"];
+  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalDrive","massOverride"];
   function saveLast(){ try{ var o={}; FIELDS.forEach(function(id){ o[id]=$(id).value; }); localStorage.setItem(LAST,JSON.stringify(o)); }catch(e){ /* storage blocked — keep working in-memory */ } }
   function restoreLast(){ try{ var v=localStorage.getItem(LAST); if(!v) return; var o=JSON.parse(v); FIELDS.forEach(function(id){ if(id in o && o[id]!=null) $(id).value=o[id]; }); }catch(e){ /* ignore corrupt cache */ } }
 
@@ -640,6 +703,7 @@
       springMin:i.springMin, springMax:i.springMax, arbMin:i.arbMin, arbMax:i.arbMax,
       dampMin:i.dampMin, dampMax:i.dampMax, rideMin:i.rideMin, rideMax:i.rideMax,
       frontAeroMin:i.frontAeroMin, frontAeroMax:i.frontAeroMax, rearAeroMin:i.rearAeroMin, rearAeroMax:i.rearAeroMax,
+      finalDrive:i.finalDrive, massOverride:i.massOverride,
       curve:CURVE,   // the imported car profile (engine + measured ratios/mass/grip) travels with the tune
       savedAt:new Date().toISOString()};
   }
@@ -652,6 +716,7 @@
     $("rideMin").value=t.rideMin!=null?t.rideMin:""; $("rideMax").value=t.rideMax!=null?t.rideMax:"";
     $("frontAeroMin").value=t.frontAeroMin!=null?t.frontAeroMin:""; $("frontAeroMax").value=t.frontAeroMax!=null?t.frontAeroMax:"";
     $("rearAeroMin").value=t.rearAeroMin!=null?t.rearAeroMin:""; $("rearAeroMax").value=t.rearAeroMax!=null?t.rearAeroMax:"";
+    $("finalDrive").value=t.finalDrive!=null?t.finalDrive:""; $("massOverride").value=t.massOverride!=null?t.massOverride:"";
     // saved tune carries its own profile. A normalised object is tagged with a boolean isProfile
     // (set only by normCurve); a RAW export (torque-curve or car-profile) lacks it and must be
     // normalised — testing Array.isArray(.curve) alone can't tell them apart (both have a .curve array).
@@ -718,7 +783,7 @@
   }
 
   function resetFields(){
-    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
+    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalDrive","massOverride"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
     $("drivetrain").value="RWD"; $("intent").value="road";
     $("arbMin").value=1; $("arbMax").value=65; $("dampMin").value=1; $("dampMax").value=20;
     compute();   // keeps the imported profile (it isn't a field) — use Clear to remove it
@@ -732,7 +797,8 @@
     var el=$("curveStatus"); if(!el) return;
     if(CURVE){
       el.textContent="✓ "+(CURVE.isProfile?"profile":"curve")+": "+Math.round(CURVE.peakTorque.torque)+" Nm peak, redline "+Math.round(CURVE.maxRpm)
-        +(CURVE.mass?", "+CURVE.mass+" kg":"")+(CURVE.car&&CURVE.car.pi?", PI "+CURVE.car.pi:"");
+        +(CURVE.mass?", "+CURVE.mass+" kg"+(CURVE.massSource==="manual"?" (manual)":""):", mass NOT measured — set Mass override below")
+        +(CURVE.car&&CURVE.car.pi?", PI "+CURVE.car.pi:"");
       el.className="note good";
     } else { el.textContent="no profile loaded"; el.className="note"; }
     var clr=$("curveClear"); if(clr) clr.style.display=CURVE?"inline-block":"none";
@@ -773,7 +839,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="ftc-20260609-194635";
+  var BUILD="7059d5d7b0f7461a94089cd5c3bdc2ba";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
