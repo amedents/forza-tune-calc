@@ -146,15 +146,15 @@
       </div>
       <div class="grid2" style="margin-top:6px">
         <div class="field">
-          <label for="finalDrive">In-game final drive (read it off the gearbox tuning page)</label>
-          <input id="finalDrive" type="number" min="0.5" max="10" step="0.01" placeholder="e.g. 3.16" />
+          <label for="finalDrive">In-game final drive (leave empty → the app recommends one)</label>
+          <input id="finalDrive" type="number" min="0.5" max="10" step="0.01" placeholder="auto-recommended" />
         </div>
         <div class="field">
           <label for="massOverride">Mass override, kg (only if capture couldn't measure it)</label>
           <input id="massOverride" type="number" min="300" max="5000" step="1" placeholder="from the car's stats card" />
         </div>
       </div>
-      <div class="note">No more typing engine specs. Run <code>capture-tool/fh6-torque-capture.py</code>, then in FH6 do <b>one full-throttle pull from a standstill up through the gears</b>. It measures the real torque curve, gear ratios, tyre size, weight, grip and your actual 0–100 — import the JSON here and the <b>Gearing</b> card + <b>launch optimizer</b> fill themselves. <b class="warnc">Telemetry measures TOTAL ratios (gear × final drive) — enter your final drive above and the cards show the exact per-gear slider values to type into the game.</b> (Front weight % and the spring/ARB/damping/aero ranges below can't be read from telemetry, so they stay manual.)</div>
+      <div class="note">No more typing engine specs. Run <code>capture-tool/fh6-torque-capture.py</code>, then in FH6 do <b>one full-throttle pull from a standstill up through the gears</b>. It measures the real torque curve, gear ratios, tyre size, weight, grip and your actual 0–100 — import the JSON here and the <b>Gearing</b> card + <b>launch optimizer</b> fill themselves. <b class="warnc">Telemetry measures TOTAL ratios (gear × final drive), so the cards show per-gear slider values assuming a recommended final drive — set that final drive in-game too, or enter your own above.</b> (Front weight % and the spring/ARB/damping/aero ranges below can't be read from telemetry, so they stay manual.)</div>
     </details>
     <div class="row" style="margin-top:12px">
       <button id="saveBtn">★ Save tune</button>
@@ -341,6 +341,27 @@
     }
     return d.cdA||0.72;
   }
+  // Telemetry sees only TOTAL ratios; the gear/final split is invisible and ANY final
+  // drive in the feasible window reproduces the same car - it just rescales the sliders.
+  // Recommend one: top gear lands at ~0.85 on its slider (typical race headroom), and
+  // 1st is kept reachable (<=5.8) on cars with a huge spread.
+  function recommendFinal(ratios){
+    var top=ratios[ratios.length-1], first=ratios[0];
+    var f=top/0.85;
+    if(first/f>5.8) f=first/5.8;
+    return Math.round(f*100)/100;
+  }
+  // final drive used for slider conversion: the user's, else the recommendation
+  function effFinal(){
+    var fd=num("finalDrive");
+    if(fd&&fd>0) return {fd:fd, rec:false};
+    if(CURVE&&CURVE.isProfile){
+      var gr=CURVE.gearRatios||{};
+      var keys=Object.keys(gr).map(Number).filter(function(n){return n>=1;}).sort(function(a,b){return a-b;});
+      if(keys.length) return {fd:recommendFinal(keys.map(function(k){return gr[String(k)];})), rec:true};
+    }
+    return null;
+  }
   // drag-limited top speed (m/s): solve P*eff = 0.5*rho*cdA*v^3 + crr*m*g*v by bisection
   function dragVmax(powerW,eff,cdA,crr,m){
     function need(v){ return 0.5*1.225*cdA*v*v*v + crr*m*9.81*v; }
@@ -430,7 +451,7 @@
       var keys=Object.keys(gr).map(Number).filter(function(n){return n>=1;}).sort(function(a,b){return a-b;});
       var ratios=keys.map(function(k){ return gr[String(k)]; });
       var shifts=(pts && pts.length>=2)? optimalShiftRpms(pts,ratios,redline) : null;
-      var fd=num("finalDrive");
+      var ef=effFinal(), fd=ef&&ef.fd;
       function kmhAt(rpm,tot){ return rW? Math.round(rpm*2*Math.PI*rW/(60*tot)*3.6) : null; }
       // honest top speed: redline in top gear, CAPPED by what drag allows for this power
       var vDragKmh=null, m=effMass();
@@ -461,10 +482,12 @@
         }
       }
       var note;
-      if(fd&&fd>0){
+      if(ef&&ef.rec){
+        note="⚠ FIRST set the final-drive slider to "+fmt(fd,2)+" (recommended — top gear at ~0.85 for headroom), then type the per-gear slider values above. They assume that final drive; if you run a different one, enter it in the Car profile section and the values rescale.";
+      } else if(fd){
         note="Slider values = measured total ratio ÷ your final drive ("+fmt(fd,2)+") — type them straight into the game's per-gear sliders. Shift points are force-matched to your torque curve; top gear pulls to redline ("+Math.round(redline)+" rpm).";
       } else {
-        note="⚠ These are TOTAL ratios (gear × final drive) — do NOT type them into the game's per-gear sliders. Enter your in-game final drive (Car profile section) and this card converts to exact slider values.";
+        note="⚠ These are TOTAL ratios (gear × final drive) — do NOT type them into the game's per-gear sliders.";
       }
       // coverage warning: gears the capture never measured
       var missing=[]; for(var n=1;n<=keys[keys.length-1];n++){ if(keys.indexOf(n)<0) missing.push(n); }
@@ -621,8 +644,8 @@
       return;
     }
     var lowSens=r.spread<0.05, measured=r.gripSrc.indexOf("measured")===0;
-    var fd=num("finalDrive");
-    var bestTxt=(fd&&fd>0)? fmt(r.best.ratio/fd,2)+" slider ("+fmt(r.best.ratio,2)+" total)" : fmt(r.best.ratio,2)+" total — enter final drive for the slider value";
+    var ef=effFinal();
+    var bestTxt=ef? fmt(r.best.ratio/ef.fd,2)+" slider ("+fmt(r.best.ratio,2)+" total, final "+fmt(ef.fd,2)+(ef.rec?" recommended":"")+")" : fmt(r.best.ratio,2)+" total";
     var pairs=[
       ["Best 1st gear", lowSens? bestTxt+" (low confidence)" : bestTxt],
       ["Move your 1st-gear slider", (r.pctChange>=0?"+":"")+fmt(r.pctChange,0)+"%"+(r.cur1Est?" — 1st was estimated":"")],
@@ -839,7 +862,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="7059d5d7b0f7461a94089cd5c3bdc2ba";
+  var BUILD="56f53e0c831c415c90fda8f4ff98cb0c";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
