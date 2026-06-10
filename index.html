@@ -452,6 +452,20 @@
     return {F:mass*9.81*muDef*tractionShare(CURVE.drivetrain||i.drivetrain, i.frontDist/100),
             src:"estimated (no standing-start launch in capture)"};
   }
+  // equilibrium speed in a gear: where wheel force meets drag on the REAL torque curve
+  // (or redline if force still wins there). This is what the car actually does - e.g.
+  // an over-tall top gear has a LOWER equilibrium than the gear below it.
+  function eqTopSpeed(tot,o){
+    var rW=o.tyreRadius;
+    function F(v){ var rpm=clamp(v/(2*Math.PI*rW)*60*tot, o.curve[0].rpm, o.redline);
+      return torqueAt(o.curve,rpm)*tot*o.eff/rW; }
+    function drag(v){ return 0.5*1.225*o.cdA*v*v + o.crr*o.mass*9.81; }
+    var vRed=o.redline*2*Math.PI*rW/(60*tot);
+    if(F(vRed)>=drag(vRed)) return {v:vRed, limited:"redline"};
+    var lo=3, hi=vRed;
+    for(var k=0;k<40;k++){ var mid=(lo+hi)/2; if(F(mid)>=drag(mid)) lo=mid; else hi=mid; }
+    return {v:(lo+hi)/2, limited:"drag"};
+  }
   // IDEAL gearbox, computed from physics rather than echoing the current tune:
   //   top gear  - reaches the drag-limited vmax exactly at peak-power rpm
   //   1st gear  - sweep of geometric stacks, ranked by simulated 0-100 (wheelspin is
@@ -466,8 +480,18 @@
     var N=keys.length?Math.max.apply(null,keys):7;
     if(N<2) return null;
     var eff=driveEff(i), cdA=effCdA(i), crr=(CURVE.drag&&CURVE.drag.crr)||0.013;
-    var vmax=dragVmax(CURVE.peakPower.power,eff,cdA,crr,m);
-    var totTop=CURVE.peakPower.rpm*2*Math.PI*rW/(60*vmax);
+    var oEq={curve:pts,redline:CURVE.maxRpm,tyreRadius:rW,eff:eff,cdA:cdA,crr:crr,mass:m};
+    // top gear: the total ratio whose force-balance EQUILIBRIUM speed is highest -
+    // solved on the real curve, valid for any car class (a single-point peak-power
+    // formula over-promised on odd curves and couldn't see an over-tall top gear)
+    var naive=CURVE.peakPower.rpm*2*Math.PI*rW/(60*dragVmax(CURVE.peakPower.power,eff,cdA,crr,m));
+    var totTop=naive, bestEq=null;
+    for(var a=0;a<=30;a++){
+      var tt=naive*(0.6+a*(1.6-0.6)/30);
+      var e=eqTopSpeed(tt,oEq);
+      if(!bestEq||e.v>bestEq.v){ bestEq=e; totTop=tt; }
+    }
+    var vmax=bestEq.v;
     var grip=gripCeiling(i,m);
     // objective: time to 60% of vmax - 0-100 alone only exercises 1st gear and rewards
     // an absurd flat stack; 60% vmax makes most of the box earn its spacing
@@ -482,7 +506,14 @@
       if(r.reached&&(!best||r.time<best.time)) best={time:r.time,stack:stack};
     }
     if(!best) return null;
-    return {stack:best.stack,time:best.time,targetKmh:targetV*3.6,vmaxKmh:vmax*3.6,N:N,gripSrc:grip.src};
+    // fixed point: if the measured box already IS this stack, say so instead of
+    // re-proposing forever (capture noise would otherwise nudge the numbers each run)
+    var grM=CURVE.gearRatios||{}, matched=true;
+    for(var g2=1; g2<=N; g2++){
+      var meas=grM[String(g2)];
+      if(meas==null || Math.abs(meas-best.stack[g2-1])/best.stack[g2-1]>0.03){ matched=false; break; }
+    }
+    return {stack:best.stack,time:best.time,targetKmh:targetV*3.6,vmaxKmh:vmax*3.6,N:N,gripSrc:grip.src,matched:matched};
   }
   function gearingCard(i){
     if(CURVE && CURVE.isProfile && CURVE.gearRatios && Object.keys(CURVE.gearRatios).length){
@@ -492,10 +523,10 @@
       var shifts=(pts && pts.length>=2)? optimalShiftRpms(pts,ratios,redline) : null;
       var ef=effFinal(), fd=ef&&ef.fd;
       function kmhAt(rpm,tot){ return rW? Math.round(rpm*2*Math.PI*rW/(60*tot)*3.6) : null; }
-      // honest top speed: redline in top gear, CAPPED by what drag allows for this power
-      var vDragKmh=null, m=effMass();
-      if(CURVE.peakPower && CURVE.peakPower.power>0 && m)
-        vDragKmh=Math.round(dragVmax(CURVE.peakPower.power,driveEff(i),effCdA(i),(CURVE.drag&&CURVE.drag.crr)||0.013,m)*3.6);
+      // honest top speed: force-balance equilibrium on the real curve, per gear
+      var m=effMass(), oEq=null;
+      if(m && rW && pts && pts.length>=2 && CURVE.peakPower && CURVE.peakPower.power>0)
+        oEq={curve:pts,redline:redline,tyreRadius:rW,eff:driveEff(i),cdA:effCdA(i),crr:(CURVE.drag&&CURVE.drag.crr)||0.013,mass:m};
       var pairs=keys.map(function(k,idx){
         var tot=ratios[idx];
         // the in-game slider takes GEAR ratio, not total - show the slider number first
@@ -503,15 +534,25 @@
         if(shifts && idx<keys.length-1){
           var sr=shifts[idx], kmh=kmhAt(sr,tot);
           val+=" · shift "+Math.round(sr)+" rpm"+(kmh!=null?" @ "+kmh+" km/h":"");
+        } else if(oEq){
+          var e=eqTopSpeed(tot,oEq);
+          val+=" · top ~"+Math.round(e.v*3.6)+" km/h ("+(e.limited==="drag"?"drag-limited":"redline")+")";
         } else {
           var top=kmhAt(redline,tot);
-          if(top!=null){
-            if(vDragKmh!=null && vDragKmh<top) val+=" · top ~"+vDragKmh+" km/h (drag-limited)";
-            else val+=" · top "+top+" km/h (redline)";
-          }
+          if(top!=null) val+=" · top "+top+" km/h (redline)";
         }
         return ["Gear "+k, val];
       });
+      // over-tall top detector: a lower gear with a HIGHER equilibrium than top means
+      // the car decelerates after the last upshift (user-observed: 6th 422, 7th sagged)
+      var tallTop=null;
+      if(oEq && keys.length>=2){
+        var eTop=eqTopSpeed(ratios[keys.length-1],oEq);
+        for(var q2=0; q2<keys.length-1; q2++){
+          var eG=eqTopSpeed(ratios[q2],oEq);
+          if(eG.v>eTop.v+0.5){ tallTop="⚠ Top gear is too tall: gear "+keys[q2]+" already reaches ~"+Math.round(eG.v*3.6)+" km/h but top settles at ~"+Math.round(eTop.v*3.6)+" — the last upshift loses speed. Shorten top (or raise final drive)."; break; }
+        }
+      }
       // gear-spacing flag: if an upshift drops engine well below the torque peak, that next gear is too tall
       var ptRpm=(CURVE.peakTorque&&CURVE.peakTorque.rpm)||0, sag=null;
       if(shifts && ptRpm){
@@ -538,6 +579,7 @@
           break;
         }
       }
+      if(tallTop) note+=" "+tallTop;
       if(sag) note+=" "+sag;
       note+=" To change 1st, use the launch optimizer below.";
       return {pairs:pairs, note:note};
@@ -584,7 +626,7 @@
       var fd2=(fdIn&&fdIn>0)?fdIn:recommendFinal(ideal.stack), rec2=!(fdIn&&fdIn>0);
       var shifts2=optimalShiftRpms(CURVE.curve,ideal.stack,CURVE.maxRpm);
       var rWi=CURVE.tyreRadius;
-      var ip=[["Final drive",fmt(fd2,2)+(rec2?" — set this FIRST":"")]];
+      var ip=ideal.matched? [["Status","✓ already matched"]] : [["Final drive",fmt(fd2,2)+(rec2?" — set this FIRST":"")]];
       ideal.stack.forEach(function(tot,idx){
         var v=fmt(tot/fd2,2);
         if(idx<ideal.stack.length-1){
@@ -594,7 +636,8 @@
         ip.push(["Gear "+(idx+1),v]);
       });
       box.appendChild(card("Ideal gearing (computed)",ip,
-        "Solved from your measured curve, mass and drag — not copied from the current tune. Top gear reaches the drag-limited "
+        (ideal.matched?"✓ Your current gearbox already matches this ideal stack (within 3%) — keep it; re-captures will wobble the digits, that's measurement noise, not a better tune. ":"")
+        +"Solved from your measured curve, mass and drag — not copied from the current tune. Top gear reaches the drag-limited "
         +Math.round(ideal.vmaxKmh)+" km/h at peak-power rpm; the stack won a sweep ranked by simulated 0–"+Math.round(ideal.targetKmh)+" km/h ("
         +fmt(ideal.time,2)+"s predicted; grip: "+ideal.gripSrc+"); middle gears follow a geometric progression, so every upshift drops the same rpm. "
         +"Wheelspin is not avoided — only its cost in time counts (on cars this powerful every competitive 1st gear spins)."));
@@ -931,7 +974,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="8cec765bf9204d3fbb013ccf63e104e7";
+  var BUILD="1b80fd6ea2114e388becd148eb799148";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
