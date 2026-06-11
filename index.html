@@ -150,8 +150,12 @@
           <input id="finalDrive" type="number" min="0.5" max="10" step="0.01" placeholder="auto-recommended" />
         </div>
         <div class="field">
-          <label for="massOverride">Mass override, kg (only if capture couldn't measure it)</label>
+          <label for="massOverride">Mass override, kg (stats-card weight — overrides the capture)</label>
           <input id="massOverride" type="number" min="300" max="5000" step="1" placeholder="from the car's stats card" />
+        </div>
+        <div class="field">
+          <label for="gearCount">Gear count (if the capture missed top gears)</label>
+          <input id="gearCount" type="number" min="2" max="11" step="1" placeholder="auto: highest gear captured" />
         </div>
       </div>
       <div class="note">No more typing engine specs. Run <code>capture-tool/fh6-torque-capture.py</code>, then in FH6 do <b>one full-throttle pull from a standstill up through the gears</b>. It measures the real torque curve, gear ratios, tyre size, weight, grip and your actual 0–100 — import the JSON here and the <b>Gearing</b> card + <b>launch optimizer</b> fill themselves. <b class="warnc">Telemetry measures TOTAL ratios (gear × final drive), so the cards show per-gear slider values assuming a recommended final drive — set that final drive in-game too, or enter your own above.</b> (Front weight % and the spring/ARB/damping/aero ranges below can't be read from telemetry, so they stay manual.)</div>
@@ -196,6 +200,7 @@
   var KEY="forzatune_v1";
   var CURVEKEY="forzatune_curve_v1";   // last imported torque curve (own key; can be large)
   var CURVE=null;                       // {idleRpm,maxRpm,peakTorque,peakPower,curve:[{rpm,torque,power}],car}
+  var IDEAL=null;                       // idealGearing() result, computed ONCE per compute() pass (effFinal reads it)
   var $=function(id){return document.getElementById(id);};
 
   // ---- intent presets (community baselines; starting points) ----
@@ -223,7 +228,7 @@
       rideMin:num("rideMin"), rideMax:num("rideMax"),
       frontAeroMin:num("frontAeroMin"), frontAeroMax:num("frontAeroMax"),
       rearAeroMin:num("rearAeroMin"), rearAeroMax:num("rearAeroMax"),
-      finalDrive:num("finalDrive"), massOverride:num("massOverride")
+      finalDrive:num("finalDrive"), massOverride:num("massOverride"), gearCount:num("gearCount")
     };
   }
 
@@ -326,20 +331,51 @@
     for(var r2=idle;r2<=rPeak;r2+=25){ if(F(r2)<=gripF) best=r2; }
     return {rpm:best, mode:"grip-limited"};
   }
-  // mass for physics: measured by the capture when possible, else the user-entered override
-  function effMass(){ return (CURVE&&CURVE.mass)||num("massOverride")||null; }
+  // mass for physics: the user's override ALWAYS wins (it's how a wheelspin-poisoned
+  // measured mass gets corrected without a re-capture), else the capture's measurement
+  function effMass(){ return num("massOverride")||(CURVE&&CURVE.mass)||null; }
   function driveEff(i){ return ((CURVE&&CURVE.drivetrain)||i.drivetrain)==="AWD"?0.85:0.90; }
-  // drag area: calibrated from the capture's own observed top speed when available
-  // (at vmax, engine power exactly balances drag + rolling resistance), else the default
+  // a measured mass that contradicts the capture's own launch is wheelspin poisoning,
+  // not data: m*a_peak can never exceed what 1st gear delivers at the wheels
+  function massTrouble(i){
+    if(!(CURVE&&CURVE.isProfile&&CURVE.mass&&CURVE.massSource!=="manual")) return null;
+    var L=CURVE.measuredLaunch, gr=CURVE.gearRatios||{}, rW=CURVE.tyreRadius;
+    if(!L||!(L.peakAccelMs2>2)||!gr["1"]||!rW||!(CURVE.peakTorque&&CURVE.peakTorque.torque>0)) return null;
+    var f1=CURVE.peakTorque.torque*gr["1"]*driveEff(i)/rW;
+    if(CURVE.mass*L.peakAccelMs2<=f1*1.15) return null;
+    return "Measured mass ("+CURVE.mass+" kg) is physically impossible: the capture's own launch pulled "
+      +fmt(L.peakAccelMs2,1)+" m/s², but 1st gear can deliver at most ~"+Math.round(f1)+" N — that accelerates at most ~"
+      +Math.round(f1/L.peakAccelMs2)+" kg that hard. Wheelspin poisoned the capture's mass regression. "
+      +"Enter the car's stats-card weight in 'Mass override' (or re-capture with capture-tool v3, which rejects spin frames) — "
+      +"until then the launch optimizer and ideal gearing stay paused rather than show numbers built on a wrong mass.";
+  }
+  // drag area, most-trusted source first: (1) cdA the capture MEASURED mid-pull (v3 tool,
+  // accel-corrected force balance — no terminal assumption); (2) fit from the capture's
+  // top-speed point, accel-corrected when accel was recorded; (3) profile/default value.
+  // The legacy fit (2 without accel) ASSUMES vmax was terminal — if the run ended while
+  // still pulling, it overestimates drag and under-promises top speed.
   function effCdA(i){
     var d=(CURVE&&CURVE.drag)||{}, m=effMass();
+    if(d.cdASource==="measured"&&isFinite(d.cdA)) return clamp(d.cdA,0.2,1.6);
     var at=CURVE&&CURVE.atTopSpeed;
     if(at && at.kmh>120 && at.powerW && m){
       var v=at.kmh/3.6;
-      var cdA=(at.powerW*driveEff(i) - (d.crr||0.013)*m*9.81*v)/(0.5*1.225*v*v*v);
+      var Pw=at.powerW*driveEff(i) - (isFinite(at.accelMs2)? m*Math.max(at.accelMs2,0)*v : 0);
+      var cdA=(Pw - (d.crr||0.013)*m*9.81*v)/(0.5*1.225*v*v*v);
       if(isFinite(cdA)) return clamp(cdA,0.2,1.6);
     }
     return d.cdA||0.72;
+  }
+  // one honest sentence about where the drag number comes from (shown on the ideal card)
+  function cdaSourceNote(i){
+    var d=(CURVE&&CURVE.drag)||{};
+    if(d.cdASource==="measured") return "Drag was MEASURED during your capture pull.";
+    var at=CURVE&&CURVE.atTopSpeed;
+    if(at && at.kmh>120 && at.powerW && effMass()){
+      if(isFinite(at.accelMs2)) return "Drag fitted from the capture's top-speed point (accel-corrected).";
+      return "Drag fitted ASSUMING the capture's "+Math.round(at.kmh)+" km/h was this car's true limit — if it was still pulling there, real top speed is higher; re-capture with capture-tool v3 to measure drag directly.";
+    }
+    return "Drag is a default estimate (no clean high-speed data) — top-speed numbers are rough.";
   }
   // Telemetry sees only TOTAL ratios; the gear/final split is invisible and ANY final
   // drive in the feasible window reproduces the same car - it just rescales the sliders.
@@ -351,10 +387,14 @@
     if(first/f>5.8) f=first/5.8;
     return Math.round(f*100)/100;
   }
-  // final drive used for slider conversion: the user's, else the recommendation
+  // final drive used for slider conversion: the user's, else ONE shared recommendation.
+  // When an ideal stack is proposed, the recommendation is derived from IT — every card
+  // (measured gearing, ideal gearing, launch optimizer) then shows the SAME final drive;
+  // two different "recommended finals" on one screen contradicted each other (2026-06-11).
   function effFinal(){
     var fd=num("finalDrive");
     if(fd&&fd>0) return {fd:fd, rec:false};
+    if(IDEAL && !IDEAL.matched) return {fd:recommendFinal(IDEAL.stack), rec:true};
     if(CURVE&&CURVE.isProfile){
       var gr=CURVE.gearRatios||{};
       var keys=Object.keys(gr).map(Number).filter(function(n){return n>=1;}).sort(function(a,b){return a-b;});
@@ -477,7 +517,11 @@
     var m=effMass(), rW=CURVE.tyreRadius, pts=CURVE.curve;
     if(!m||!rW||!pts||pts.length<3||!CURVE.peakPower||!(CURVE.peakPower.power>0)) return null;
     var keys=Object.keys(CURVE.gearRatios||{}).map(Number).filter(function(n){return n>=1;});
-    var N=keys.length?Math.max.apply(null,keys):7;
+    var measuredN=keys.length?Math.max.apply(null,keys):0;
+    // the capture only knows gears the pull actually used — if the car has more (e.g. a
+    // 7-speed captured to 6th), the user says so via the Gear count field
+    var nIn=num("gearCount");
+    var N=nIn?clamp(Math.round(nIn),2,11):(measuredN||7);
     if(N<2) return null;
     var eff=driveEff(i), cdA=effCdA(i), crr=(CURVE.drag&&CURVE.drag.crr)||0.013;
     var oEq={curve:pts,redline:CURVE.maxRpm,tyreRadius:rW,eff:eff,cdA:cdA,crr:crr,mass:m};
@@ -513,7 +557,7 @@
       var meas=grM[String(g2)];
       if(meas==null || Math.abs(meas-best.stack[g2-1])/best.stack[g2-1]>0.03){ matched=false; break; }
     }
-    return {stack:best.stack,time:best.time,targetKmh:targetV*3.6,vmaxKmh:vmax*3.6,N:N,gripSrc:grip.src,matched:matched};
+    return {stack:best.stack,time:best.time,targetKmh:targetV*3.6,vmaxKmh:vmax*3.6,N:N,measuredN:measuredN,gripSrc:grip.src,matched:matched};
   }
   function gearingCard(i){
     if(CURVE && CURVE.isProfile && CURVE.gearRatios && Object.keys(CURVE.gearRatios).length){
@@ -589,6 +633,7 @@
 
   function compute(){
     var i=readInputs();
+    IDEAL=null;                        // recomputed below; never let a previous pass leak through
     saveLast();
     var err=$("err"); err.textContent="";
     var box=$("results"); box.innerHTML="";
@@ -615,15 +660,21 @@
     // ---- 1. Tires → Tyre pressure ----
     box.appendChild(card("Tyre pressure",[["Front",fmt(P.barF,1)+" bar"],["Rear",fmt(P.barR,1)+" bar"]],"Cold start values. Forza target is ~2.2–2.3 bar HOT — after a lap, drop pressure if a tyre is above that. (Set Forza's units to Metric to see bar.)"));
 
-    // ---- 2. Gearing (real captured ratios when a profile is loaded) ----
+    // ---- 2. Gearing. Ideal stack is computed FIRST (and once): effFinal derives the one
+    // shared final-drive recommendation from it, so the measured card, the ideal card and
+    // the launch optimizer all speak the same slider numbers. A physically-impossible
+    // measured mass pauses the physics cards instead of feeding them garbage.
+    var mTrouble=(num("massOverride")==null)? massTrouble(i) : null;
+    IDEAL = mTrouble? null : idealGearing(i);
     var gl=gearingCard(i);
     box.appendChild(card("Gearing (as measured)",gl.pairs,gl.note));
 
     // ---- 2b. Ideal gearing, solved from physics (not copied from the current tune) ----
-    var ideal=idealGearing(i);
-    if(ideal){
-      var fdIn=num("finalDrive");
-      var fd2=(fdIn&&fdIn>0)?fdIn:recommendFinal(ideal.stack), rec2=!(fdIn&&fdIn>0);
+    if(mTrouble){
+      box.appendChild(card("Ideal gearing (computed)",[["Status","⚠ paused — mass needs your input"]],mTrouble));
+    } else if(IDEAL){
+      var ideal=IDEAL;
+      var ef2=effFinal(), fd2=ef2?ef2.fd:recommendFinal(ideal.stack), rec2=!ef2||ef2.rec;
       var shifts2=optimalShiftRpms(CURVE.curve,ideal.stack,CURVE.maxRpm);
       var rWi=CURVE.tyreRadius;
       var ip=ideal.matched? [["Status","✓ already matched"]] : [["Final drive",fmt(fd2,2)+(rec2?" — set this FIRST":"")]];
@@ -635,12 +686,20 @@
         } else v+=" · top ~"+Math.round(ideal.vmaxKmh)+" km/h";
         ip.push(["Gear "+(idx+1),v]);
       });
+      var coverNote="";
+      if(ideal.measuredN && ideal.N>ideal.measuredN)
+        coverNote=" Gears "+(ideal.measuredN+1)+"–"+ideal.N+" were never captured (the pull topped out in gear "+ideal.measuredN+") — their values come from the solver alone.";
+      else if(!num("gearCount"))
+        coverNote=" The stack has "+ideal.N+" gears because that's the highest gear the capture saw — if the car has more, set 'Gear count' in the Car profile section.";
       box.appendChild(card("Ideal gearing (computed)",ip,
         (ideal.matched?"✓ Your current gearbox already matches this ideal stack (within 3%) — keep it; re-captures will wobble the digits, that's measurement noise, not a better tune. ":"")
-        +"Solved from your measured curve, mass and drag — not copied from the current tune. Top gear reaches the drag-limited "
-        +Math.round(ideal.vmaxKmh)+" km/h at peak-power rpm; the stack won a sweep ranked by simulated 0–"+Math.round(ideal.targetKmh)+" km/h ("
+        +"Solved from your measured curve, mass and drag — not copied from the current tune. Top gear is the ratio with the highest force-balance equilibrium speed (~"
+        +Math.round(ideal.vmaxKmh)+" km/h) on your real curve; the stack won a sweep ranked by simulated 0–"+Math.round(ideal.targetKmh)+" km/h ("
         +fmt(ideal.time,2)+"s predicted; grip: "+ideal.gripSrc+"); middle gears follow a geometric progression, so every upshift drops the same rpm. "
-        +"Wheelspin is not avoided — only its cost in time counts (on cars this powerful every competitive 1st gear spins)."));
+        +"Wheelspin is not avoided — only its cost in time counts (on cars this powerful every competitive 1st gear spins). "
+        +cdaSourceNote(i)
+        +" If FH6's tuning screen promises a higher top speed than this, trust a real straight: that stat ignores how your drag and gearing interact at speed."
+        +coverNote));
     }
 
     // ---- 3. Alignment ----
@@ -747,6 +806,8 @@
       +(CURVE.atTopSpeed?", saw "+Math.round(CURVE.atTopSpeed.kmh)+" km/h":"")
       +(CURVE.car&&CURVE.car.pi?" · PI "+CURVE.car.pi:"")+".";
     box.appendChild(sum);
+    var mT=(num("massOverride")==null)? massTrouble(i) : null;
+    if(mT){ note("⚠ "+mT); return; }
     var r=optimizeLaunch(i);
     if(r.state!=="ok"){
       var hints={curveonly:"This is an old torque-curve-only export. Re-capture a full car profile (adds mass, gear ratios, tyre size) with the latest capture-tool.",
@@ -770,7 +831,9 @@
     }
     if(r.measured0to100!=null) pairs.push(["FH6 measured 0–100", r.measured0to100+"s (peak slip "+(r.measuredSpin!=null?r.measuredSpin:"?")+")"]);
     box.appendChild(card("Fastest 1st gear off the line (0–100 km/h)", pairs,
-      "Standing-start sim from your imported profile. Launch revs = where 1st-gear wheel force meets your measured grip. "
+      "Standing-start sim from your imported profile. This sweeps 1st against your CURRENT measured gears 2+ — "
+      +(IDEAL&&!IDEAL.matched?"if you apply the Ideal gearing stack instead, use ITS gear 1 (already launch-optimized for that stack); the two answer different questions, they don't contradict. ":"")
+      +"Launch revs = where 1st-gear wheel force meets your measured grip. "
       +(measured? "Grip comes from your real measured launch, so the 0–100 should track FH6 closely. "
                 : "Grip is ESTIMATED (the capture showed no wheelspin) — re-capture a launch that lights up the tyres to measure it. ")
       +(lowSens? "Sensitivity is low — 1st-gear ratio barely moves the 0–100 here, so it isn't your main lever. " : "")
@@ -806,7 +869,7 @@
 
   // ---- last inputs (so the car's basics survive a reload / app relaunch) ----
   var LAST="forzatune_last_v1";
-  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalDrive","massOverride"];
+  var FIELDS=["name","frontDist","drivetrain","intent","springMin","springMax","arbMin","arbMax","dampMin","dampMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalDrive","massOverride","gearCount"];
   function saveLast(){ try{ var o={}; FIELDS.forEach(function(id){ o[id]=$(id).value; }); localStorage.setItem(LAST,JSON.stringify(o)); }catch(e){ /* storage blocked — keep working in-memory */ } }
   function restoreLast(){ try{ var v=localStorage.getItem(LAST); if(!v) return; var o=JSON.parse(v); FIELDS.forEach(function(id){ if(id in o && o[id]!=null) $(id).value=o[id]; }); }catch(e){ /* ignore corrupt cache */ } }
 
@@ -852,6 +915,7 @@
     $("frontAeroMin").value=t.frontAeroMin!=null?t.frontAeroMin:""; $("frontAeroMax").value=t.frontAeroMax!=null?t.frontAeroMax:"";
     $("rearAeroMin").value=t.rearAeroMin!=null?t.rearAeroMin:""; $("rearAeroMax").value=t.rearAeroMax!=null?t.rearAeroMax:"";
     $("finalDrive").value=t.finalDrive!=null?t.finalDrive:""; $("massOverride").value=t.massOverride!=null?t.massOverride:"";
+    $("gearCount").value=t.gearCount!=null?t.gearCount:"";
     // saved tune carries its own profile. A normalised object is tagged with a boolean isProfile
     // (set only by normCurve); a RAW export (torque-curve or car-profile) lacks it and must be
     // normalised — testing Array.isArray(.curve) alone can't tell them apart (both have a .curve array).
@@ -918,7 +982,7 @@
   }
 
   function resetFields(){
-    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalDrive","massOverride"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
+    ["name","frontDist","springMin","springMax","rideMin","rideMax","frontAeroMin","frontAeroMax","rearAeroMin","rearAeroMax","finalDrive","massOverride","gearCount"].forEach(function(id){ $(id).value=id==="frontDist"?"52":""; });
     $("drivetrain").value="RWD"; $("intent").value="road";
     $("arbMin").value=1; $("arbMax").value=65; $("dampMin").value=1; $("dampMax").value=20;
     compute();   // keeps the imported profile (it isn't a field) — use Clear to remove it
@@ -974,7 +1038,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="1b80fd6ea2114e388becd148eb799148";
+  var BUILD="__APP_BUILD__";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
