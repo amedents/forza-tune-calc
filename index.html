@@ -271,6 +271,11 @@
     var pts=e.curve.filter(function(p){ return isFinite(p.rpm)&&isFinite(p.torque)&&p.torque>0; })
                    .map(function(p){ return {rpm:+p.rpm,torque:+p.torque,power:isFinite(p.power)?+p.power:p.torque*p.rpm*Math.PI/30}; })
                    .sort(function(a,b){ return a.rpm-b.rpm; });
+    // crater filter: a point far below BOTH neighbours is a capture artifact (FH6 cuts
+    // torque mid-shift while throttle still reads WOT; pre-v3 captures could bin one).
+    // Interpolating through it digs a hole the engine doesn't have and the equilibrium
+    // solver falls in (field bug 2026-06-11: 126 Nm at 5231 rpm between 794-Nm points).
+    pts=pts.filter(function(p,ix,arr){ return ix===0||ix===arr.length-1||p.torque>=0.5*Math.min(arr[ix-1].torque,arr[ix+1].torque); });
     var pt=pts[0], pp=pts[0];
     pts.forEach(function(p){ if(p.torque>pt.torque)pt=p; if(p.power>pp.power)pp=p; });
     return {
@@ -700,6 +705,10 @@
         +cdaSourceNote(i)
         +" If FH6's tuning screen promises a higher top speed than this, trust a real straight: that stat ignores how your drag and gearing interact at speed."
         +coverNote));
+    } else if(CURVE&&CURVE.isProfile&&effMass()&&CURVE.tyreRadius&&CURVE.curve&&CURVE.curve.length>=3){
+      // never vanish silently: a complete profile that defeats the solver is a bug signal
+      box.appendChild(card("Ideal gearing (computed)",[["Status","✕ couldn't solve"]],
+        "No gear stack reached the solver's acceleration target with this profile's physics — that usually means a corrupted torque curve or a bad drag/mass fit. Re-capture with the latest capture-tool; if it persists, report it (this message existing is a bug)."));
     }
 
     // ---- 3. Alignment ----
