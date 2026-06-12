@@ -424,19 +424,28 @@
   }
   // SHED = grip lost when a tyre spins past peak slip. CALIBRATION KNOB — tune to match FH6.
   var SHED=0.25;
+  // FH6 cuts drive while an upshift completes; zero-cost shifts flattered short gears and
+  // many-shift runs, so the sim beat the game's stopwatch on any run that crossed a shift.
+  var SHIFT_CUT=0.15;
+  // Clutch engagement time constant. The old model held launch revs until road speed
+  // caught up — for a tall 1st that's a perfect slipper to 130+ km/h, so the sim never
+  // bogged, beat FH6's measured 0-100, and tolerated 1st gears the game punishes
+  // (user-confirmed: recommended 1st too slow off the line, 2026-06-11). CALIBRATION
+  // KNOB — fitted with SHIFT_CUT to the 2026-06-11 v3 capture's measured 0-100.
+  var CLUTCH_TAU=0.6;
   // standing-start launch. ratios are TOTAL (gear x final). Returns time to reach targetV.
   function simLaunch(ratios,o){
     var pts=o.curve, dt=0.01, v=0.5, t=0, rho=1.225, g=9.81, rW=o.tyreRadius, eff=o.eff, tcap=40, spun=false;
     var shifts=optimalShiftRpms(pts,ratios,o.redline);   // upshift at the force-matched crossover, not redline
-    // clutch-slip launch: FH6 holds your launch revs until road speed catches up — without this
-    // the sim bogs every start from idle and over-predicts the 0-100 (contradicting our own advice)
+    // clutch-slip launch: FH6 holds your launch revs only while the clutch bites — engine
+    // rpm then decays toward road rpm, so a too-tall 1st bogs into the torque valley like in-game
     var hold=launchRpm(pts,ratios[0],eff,rW,o.gripF,o.redline).rpm;
     function rpmAt(v,r){ return v/(2*Math.PI*rW)*60*r; }
-    var gear=0;
+    var gear=0, cut=0;
     while(v<o.targetV && t<tcap){
       var rpm=rpmAt(v,ratios[gear]);
-      if(rpm>=shifts[gear] && gear<ratios.length-1){ gear++; rpm=rpmAt(v,ratios[gear]); }
-      if(gear===0 && rpm<hold) rpm=hold;               // slipping clutch keeps the engine at launch revs
+      if(rpm>=shifts[gear] && gear<ratios.length-1){ gear++; rpm=rpmAt(v,ratios[gear]); cut=SHIFT_CUT; }
+      if(gear===0 && rpm<hold) rpm=rpm+(hold-rpm)*Math.exp(-t/CLUTCH_TAU); // slip decays as the clutch engages
       var Te=torqueAt(pts, clamp(rpm,pts[0].rpm,o.redline));
       var Fengine=Te*ratios[gear]*eff/rW;
       // grip ceiling grows with speed (downforce-shaped, doubling by ~120 km/h):
@@ -445,7 +454,8 @@
       // optimal, contradicting both physics and the user's track experience
       var Fmax=o.gripF*(1+Math.pow(v/33.3,2));
       var Fdrive;
-      if(Fengine<=Fmax){ Fdrive=Fengine; }
+      if(cut>0){ Fdrive=0; cut-=dt; }                     // drive cut while the shift completes
+      else if(Fengine<=Fmax){ Fdrive=Fengine; }
       else { spun=true; Fdrive=Fmax*(1-SHED*clamp((Fengine-Fmax)/Fmax,0,1)); }
       var Fdrag=0.5*rho*o.cdA*v*v, Frr=o.crr*o.mass*g;
       var a=(Fdrive-Fdrag-Frr)/o.mass; if(a<-6)a=-6;
@@ -474,7 +484,9 @@
     var o={curve:CURVE.curve, targetV:27.78, mass:mass, gripF:gripF, tyreRadius:rW,
            eff:driveEff(i),
            cdA:effCdA(i), crr:(CURVE.drag&&CURVE.drag.crr)||0.013, redline:CURVE.maxRpm};
-    var lo=cur1*0.70, hi=cur1*1.45, steps=18, cands=[];
+    // wide sweep: the old 0.70-1.45x window clamped the answer — the optimum sat ON the
+    // upper bound, so "best" was really "best we allowed ourselves to look at"
+    var lo=cur1*0.60, hi=cur1*2.00, steps=28, cands=[];
     for(var m=0;m<=steps;m++){
       var g1=lo+(hi-lo)*m/steps;
       var r=simLaunch([g1].concat(rest),o);
@@ -1047,7 +1059,7 @@
    SW can't refresh them. On resume/focus, refetch this page; if its build token changed, reload once.
    BUILD is the literal placeholder in the source (feature inert) and is stamped to a unique id at publish. */
 (function(){
-  var BUILD="__APP_BUILD__";
+  var BUILD="20260612083436";
   if(BUILD.indexOf("APP_BUILD")>-1) return;            // unstamped (local/dev) -> disabled
   var busy=false;
   function check(){
